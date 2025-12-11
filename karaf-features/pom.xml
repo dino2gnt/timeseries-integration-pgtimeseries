@@ -112,7 +112,7 @@
 
         <dependency>
             <groupId>org.opennms.plugins.timeseries.pgtimeseries</groupId>
-            <artifactId>timeseries-pgtimeseries-plugin-plugin</artifactId>
+            <artifactId>pgtimeseries-tss-plugin</artifactId>
             <version>${project.version}</version>
             <scope>provided</scope>
         </dependency>

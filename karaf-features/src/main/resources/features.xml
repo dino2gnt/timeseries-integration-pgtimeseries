@@ -8,7 +8,7 @@
         <feature version="${guava.version}" dependency="true">guava</feature>
         <feature version="${hikari-cp.version}" dependency="true">hikari-cp</feature>
         <feature version="${jrobin.version}" dependency="true">jrobin</feature>
-        <bundle>mvn:org.opennms.plugins.timeseries.pgtimeseries/timeseries-pgtimeseries-plugin-plugin/${project.version}</bundle>
+        <bundle>mvn:org.opennms.plugins.timeseries.pgtimeseries/pgtimeseries-tss-plugin/${project.version}</bundle>
         <capability>
             osgi.service;effective:=active;objectClass=javax.sql.DataSource;osgi.jndi.service.name=jdbc/manifestlegacydb
         </capability>
