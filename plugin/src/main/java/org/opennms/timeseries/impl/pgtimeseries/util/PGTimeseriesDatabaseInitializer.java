@@ -150,11 +150,13 @@ public class PGTimeseriesDatabaseInitializer {
             Statement stmt = conn.createStatement();
             db.watch(stmt);
             // Create the table to hold the series
-            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_time_series(key TEXT NOT NULL, time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION NULL) PARTITION BY RANGE (time)");
+            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_time_series(keyid bigint, time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION NULL) PARTITION BY RANGE (time)");
+            // create the metric sequence
+            executeQuery(stmt, "CREATE SEQUENCE IF NOT EXISTS pgtimeseries_metric_seq no cycle");
             // Metrics table
-            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_metric(key TEXT NOT NULL PRIMARY KEY)");
+            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_metric(keyid bigint, key TEXT NOT NULL PRIMARY KEY, UNIQUE (key))");
             // tag table
-            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_tag(fk_pgtimeseries_metric TEXT NOT NULL, key TEXT, value TEXT NOT NULL, type TEXT NOT NULL, UNIQUE (fk_pgtimeseries_metric, key, value, type))");
+            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_tag(keyid bigint, key TEXT, value TEXT NOT NULL, type TEXT NOT NULL, UNIQUE (keyid, key, value, type))");
             // let pg_timseries take over the table; default partition for 1 week duration
             if (config.getbackfillStart() != null && !config.getbackfillStart().isEmpty()) {
                 log.info("Using backfillStart timestamp {}", config.getbackfillStart());
@@ -189,7 +191,8 @@ public class PGTimeseriesDatabaseInitializer {
 
             //Indexes.  This is a WAG.
             executeQuery(stmt, "CREATE INDEX ON pgtimeseries_time_series(time DESC)");
-            executeQuery(stmt, "CREATE INDEX ON pgtimeseries_time_series(key)");
+            executeQuery(stmt, "CREATE INDEX ON pgtimeseries_time_series(keyid)");
+            executeQuery(stmt, "CREATE INDEX ON pgtimeseries_metric(key)");
         } finally {
             db.cleanUp();
         }
@@ -213,6 +216,11 @@ public class PGTimeseriesDatabaseInitializer {
             Statement stmt = conn.createStatement();
             db.watch(stmt);
             executeQuery(stmt, "CREATE EXTENSION timeseries CASCADE");
+            executeQuery(stmt, "ALTER TABLE ts_config OWNER TO opennms");
+            executeQuery(stmt, "ALTER TABLE part_config OWNER TO opennms");
+            executeQuery(stmt, "ALTER TABLE part_config_sub OWNER TO opennms");
+            executeQuery(stmt, "ALTER TABLE ts_table_info OWNER TO opennms");
+            executeQuery(stmt, "ALTER TABLE ts_part_info OWNER TO opennms");
         } finally {
             db.cleanUp();
         }

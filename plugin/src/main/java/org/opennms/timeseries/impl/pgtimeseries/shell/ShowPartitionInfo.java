@@ -38,7 +38,7 @@ public class ShowPartitionInfo implements Action {
         try {
             Connection conn = PGTimeseriesDatabaseInitializer.getWhichDataSourceConnection();
             db.watch(conn);
-            sql = "select table_id, part_id, part_range, pg_size_pretty(table_size_bytes), pg_size_pretty(index_size_bytes), pg_size_pretty(total_size_bytes), access_method FROM ts_part_info";
+            sql = "select table_id, part_id, part_range, pg_size_pretty(table_size_bytes), pg_size_pretty(index_size_bytes), pg_size_pretty(total_size_bytes), access_method FROM ts_part_info order by part_range desc";
             PreparedStatement statement = conn.prepareStatement(sql);
             db.watch(statement);
             ResultSet rs = statement.executeQuery();

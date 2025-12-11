@@ -10,12 +10,12 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <guava.version>33.3.0-jre</guava.version>
-        <java.version>11</java.version>
+        <java.version>17</java.version>
         <junit.version>4.13.2</junit.version>
         <karaf.version>4.3.10</karaf.version>
         <log4j.version>2.23.1</log4j.version>
         <mockito.version>5.11.0</mockito.version>
-        <opennms.api.version>1.6.0</opennms.api.version>
+        <opennms.api.version>1.6.1</opennms.api.version>
         <osgi.version>6.0.0</osgi.version>
         <osgi.compendium.version>5.0.0</osgi.compendium.version>
         <osgi.enterprise.version>5.0.0</osgi.enterprise.version>
@@ -27,7 +27,7 @@
         <jrobin.version>1.6.0</jrobin.version>
     </properties>
 
-    <version>0.1.0</version>
+    <version>0.2.0</version>
 
     <dependencyManagement>
         <dependencies>
@@ -84,7 +84,7 @@
             <dependency><!-- only needed during compile time -->
                 <groupId>org.projectlombok</groupId>
                 <artifactId>lombok</artifactId>
-                <version>1.18.10</version>
+                <version>1.18.42</version>
                 <scope>provided</scope>
             </dependency>
 

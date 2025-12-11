@@ -58,12 +58,13 @@ public class ImportFromRRD implements Action {
     @Option(name = "-b", aliases = "--batch-size --batchsize --batch", description = "Number of samples to batch out the the TSS ringbuffer at one time.", required = false, multiValued = false)
     int batchSize = 100;
 
-    @Option(name = "-y", aliases = "--yes-really", description = "Yes, I really, really want to read and import all local rrd/jrb timeseries data.", required = false, multiValued = false)
+    @Option(name = "--yes-really", description = "Yes, I really, really want to read and import all local rrd/jrb timeseries data.", required = false, multiValued = false)
     boolean yesreally = false;
 
     @Reference
     private DataSource dataSource;
 
+    private final Map<String, Integer> MetricCache = new HashMap<String, Integer>();
     //private final Path onmsHome = Paths.get(System.getProperty("opennms.home"));
     private final Path rrdDir = Paths.get(System.getProperty("rrd.base.dir"));
     private final Boolean StoreByGroup = Boolean.parseBoolean(System.getProperty("org.opennms.rrd.storeByGroup"));
@@ -528,46 +529,72 @@ public class ImportFromRRD implements Action {
         }
     }
     public void store(List<Sample> entries) throws StorageException, SQLException {
-        String sql = "INSERT INTO pgtimeseries_time_series(time, key, value)  values (?, ?, ?)";
+        String sample_sql = "INSERT INTO pgtimeseries_time_series(time, keyid, value)  values (?, ?, ?)";
+        String metric_sql = "INSERT INTO pgtimeseries_metric(keyid, key) VALUES(nextid('pgtimeseries_metric_seq'), ?) ON CONFLICT (key) DO NOTHING RETURNING keyid";
 
         final DBUtils db = new DBUtils(this.getClass());
+        int batchSize = 0;
+        Integer keyid = null;
         Connection connection = null;
         try {
             if (PGTimeseriesDatabaseInitializer.isExternalDatasourceURLAvailable()) {
                 connection = PGTimeseriesDatabaseInitializer.getWhichDataSourceConnection();
+                System.out.println("Store got connection: " + connection.toString());
             } else {
                 connection = this.dataSource.getConnection();
             }
             db.watch(connection);
-            PreparedStatement ps = connection.prepareStatement(sql);
-            db.watch(ps);
+            PreparedStatement mps = connection.prepareStatement(metric_sql);
+            PreparedStatement sps = connection.prepareStatement(sample_sql);
+            db.watch(sps);
+            db.watch(mps);
             // Partition the samples into collections smaller than max_batch_size
-            for (List<Sample> batch : Lists.partition(entries, batchSize)) {
+            for (List<Sample> batch : Lists.partition(entries, this.batchSize)) {
+                System.out.println("Inserting "+ batch.size()+" samples");
                 for (Sample sample : batch) {
-                    ps.setTimestamp(1, new Timestamp(sample.getTime().toEpochMilli()));
-                    ps.setString(2, sample.getMetric().getKey());
-                    ps.setDouble(3, sample.getValue());
-                    ps.addBatch();
-                    storeTags(connection, sample.getMetric(), ImmutableMetric.TagType.intrinsic, sample.getMetric().getIntrinsicTags());
-                    storeTags(connection, sample.getMetric(), ImmutableMetric.TagType.meta, sample.getMetric().getMetaTags());
-                    storeTags(connection, sample.getMetric(), ImmutableMetric.TagType.external, sample.getMetric().getExternalTags());
+                    if (MetricCache.containsKey(sample.getMetric().getKey())) {
+                        keyid = MetricCache.get(sample.getMetric().getKey());
+                    } else {
+                        keyid = getMetricID(sample.getMetric().getKey());
+                        if (keyid == null) {
+                            mps.setString(1, sample.getMetric().getKey());
+                            ResultSet mrs = mps.executeQuery();
+                            db.watch(mrs);
+                            while (mrs.next()) {
+                                keyid = mrs.getInt("keyid");
+                            }
+                            mrs.close();
+                        }
+                        // update the cache
+                        MetricCache.put(sample.getMetric().getKey(), keyid);
+                    }
+                    sps.setTimestamp(1, new Timestamp(sample.getTime().toEpochMilli()));
+                    sps.setInt(2, keyid);
+                    sps.setDouble(3, sample.getValue());
+                    sps.addBatch();
+                    storeTags(connection, keyid, ImmutableMetric.TagType.intrinsic, sample.getMetric().getIntrinsicTags());
+                    storeTags(connection, keyid, ImmutableMetric.TagType.meta, sample.getMetric().getMetaTags());
+                    storeTags(connection, keyid, ImmutableMetric.TagType.external, sample.getMetric().getExternalTags());
                 }
-                ps.executeBatch();
-                }
+                batchSize = batch.size();
+                sps.executeBatch();
+            }
         } catch (SQLException e) {
+            System.out.println("An error occurred while inserting samples. Some sample may be lost." + e);
             throw new StorageException(e);
         } finally {
             db.cleanUp();
         }
-    }
-        private void storeTags(final Connection connection, final Metric metric, final ImmutableMetric.TagType tagType, final Collection<Tag> tags) throws SQLException {
-        final String sql = "INSERT INTO pgtimeseries_tag(fk_pgtimeseries_metric, key, value, type)  values (?, ?, ?, ?) ON CONFLICT (fk_pgtimeseries_metric, key, value, type) DO NOTHING;";
+        }
+
+        private void storeTags(final Connection connection, final Integer keyid, final ImmutableMetric.TagType tagType, final Collection<Tag> tags) throws SQLException {
+        final String sql = "INSERT INTO pgtimeseries_tag(keyid, key, value, type)  values (?, ?, ?, ?) ON CONFLICT (keyid, key, value, type) DO NOTHING;";
         final DBUtils db = new DBUtils(this.getClass());
         try {
             PreparedStatement ps = connection.prepareStatement(sql);
             db.watch(ps);
             for (Tag tag : tags) {
-                ps.setString(1, metric.getKey());
+                ps.setInt(1, keyid);
                 ps.setString(2, tag.getKey());
                 ps.setString(3, tag.getValue());
                 ps.setString(4, tagType.name());
@@ -578,5 +605,33 @@ public class ImportFromRRD implements Action {
         } finally {
             db.cleanUp();
         }
+    }
+    private Integer getMetricID (String key) {
+        final DBUtils db = new DBUtils(this.getClass());
+        Connection connection = null;
+        Integer keyid = null;
+        try {
+            String sql = "select keyid from pgtimeseries_metric where key=?";
+            if (PGTimeseriesDatabaseInitializer.isExternalDatasourceURLAvailable()) {
+                connection = PGTimeseriesDatabaseInitializer.getWhichDataSourceConnection();
+                System.out.println("getMetricID got connection: " + connection.toString());
+            } else {
+                connection = this.dataSource.getConnection();
+            }
+            db.watch(connection);
+
+            PreparedStatement ps = connection.prepareStatement(sql);
+            db.watch(ps);
+            ResultSet rs = ps.executeQuery();
+            db.watch(rs);
+            // should only return one result
+            while (rs.next()) {
+                keyid = rs.getInt("keyid");
+            }
+            rs.close();
+        } catch (SQLException e) {
+            System.out.println("Error querying keyid for metric '"+key+"': " + e);
+        }
+        return keyid;
     }
 }
