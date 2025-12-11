@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <features name="openmms-plugins-timeseries-pgtimeseries-plugin-features" xmlns="http://karaf.apache.org/xmlns/features/v1.4.0">
 
-    <feature name="opennms-plugins-timeseries-pgtimeseries-plugin" description="OpenNMS :: Plugins :: timeseries-pgtimeseries-plugin" version="${project.version}">
+    <feature name="opennms-pgtimeseries-tss-plugin" description="OpenNMS :: Plugins :: timeseries-pgtimeseries-plugin" version="${project.version}">
         <feature dependency="true">aries-blueprint</feature>
         <feature dependency="true">shell</feature>
         <feature version="${opennms.api.version}" dependency="true">opennms-integration-api</feature>

@@ -3,7 +3,7 @@
     <parent>
         <groupId>org.opennms.plugins.timeseries.pgtimeseries</groupId>
         <artifactId>assembly</artifactId>
-        <version>0.2.0</version>
+        <version>0.2.1</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
     <artifactId>kar</artifactId>
@@ -25,7 +25,7 @@
                         </goals>
                         <configuration>
                             <featuresFile>mvn:org.opennms.plugins.timeseries.pgtimeseries/karaf-features/${project.version}/xml</featuresFile>
-                            <finalName>opennms-timeseries-pgtimeseries-plugin</finalName>
+                            <finalName>opennms-pgtimeseries-tss-plugin</finalName>
                             <ignoreDependencyFlag>true</ignoreDependencyFlag>
                             <archive>
                               <manifestEntries>

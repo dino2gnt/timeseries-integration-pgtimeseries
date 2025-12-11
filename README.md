@@ -17,13 +17,11 @@ It can be used in OpenNMS to store and retrieve timeseries data.
 
 ## Usage
 ### Compile from source
-* compile: ``mvn install``.  You will probably have to add `-Dskiptests=True`; actual tests are on the roadmap.
-* copy the `opennms-plugins-timeseries-pgtimeseries-plugin.kar` from the `./assembly/kar/target` folder to `$OPENNMS_HOME/deploy`
-### Allow for superuser database operations
-Superuser access to the database is required for the plugin to install extensions and create the required tables. Either option can be used and can be removed once initial installation is complete.
-##### Add the 'superuser' role to the 'opennms' user:
-* `sudo su - postgres -c "alter role opennms superuser;"`
-##### Or; Define a JDBC url for a superuser connection:
+* compile: ``mvn clean install``.  You will probably have to add `-Dskiptests=True`; actual tests are on the roadmap.
+* copy the `.kar` from the `./assembly/kar/target` folder to `$OPENNMS_HOME/deploy`
+### superuser database operations
+Superuser access to the database is required for the plugin to install extensions and create the required tables.
+#### Define a JDBC url for a superuser connection:
 * `echo 'adminDatasourceURL="jdbc:postgresql://localhost:5432/opennms?user=postgres&password=opennms"' >> $OPENNMS_HOME/etc/org.opennms.plugins.pgtimeseries.config.cfg`
 
 ### Add config for `pg_cron`
@@ -35,7 +33,7 @@ Superuser access to the database is required for the plugin to install extension
 
 ### Activate in the Karaf shell:
   * ``ssh -p 8101 admin@localhost``
-  * ``feature:install opennms-plugins-timeseries-pgtimeseries-plugin``
+  * ``feature:install opennms-pgtimeseries-tss-plugin``
   * The plugin will automatically create the necessary tables and attempt to install the necessary extensions if they don't already exist, if ``createTablesOnInstall = true``
   * if ``createTablesOnInstall = false`` you can use the ``opennms-pgtimeseries:install`` command to load the extensions and create tables.
  

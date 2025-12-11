@@ -3,7 +3,7 @@
     <parent>
         <groupId>org.opennms.plugins.timeseries.pgtimeseries</groupId>
         <artifactId>timeseries-pgtimeseries-plugin</artifactId>
-        <version>0.2.0</version>
+        <version>0.2.1</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
     <artifactId>karaf-features</artifactId>
@@ -83,7 +83,7 @@
                                 <feature>framework</feature>
                             </framework>
                             <features>
-                                <feature>opennms-plugins-timeseries-pgtimeseries-plugin</feature>
+                                <feature>opennms-pgtimeseries-tss-plugin</feature>
                                 <feature>guava</feature>
                             </features>
                         </configuration>
