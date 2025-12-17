@@ -5,14 +5,11 @@ It stores the data in a pg_timeseries table.
 It can be used in OpenNMS to store and retrieve timeseries data.
 
 ## Prerequisite
-* PostgreSQL 15 or greater
-* The pg_timeseries plugin must be installed in the target postgres database.
-* For testing purposes you can run: ``docker run -d --name pg-timeseries -p 5432:5432 -e POSTGRES_PASSWORD=postgres quay.io/tembo/timeseries-pg:latest``
+* PostgreSQL 13 or greater
+* The pg_timeseries plugin must be installed in the target postgres database. It is available from [dino2gnt/pg_timeseries_extension](https://github.com/dino2gnt/pg_timeseries_extension/releases)
 * The pg_timeseries extension depends on:
-  * The [pg_ivm](https://github.com/tembo-io/pg_ivm) extension (as of timeseries 0.1.6)
   * The [pg_cron](https://github.com/citusdata/pg_cron) extension
   * The [pg_partman](https://github.com/pgpartman/pg_partman) extension
-  * The [Hydra Columnar](https://github.com/hydradatabase/hydra) extension
 
 
 ## Usage
