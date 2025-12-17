@@ -1,0 +1,36 @@
+name: pg_timeseries TSS plugin
+run-name: Build OpenNMS pgtimeseries plugin
+on:
+  push:
+  workflow_dispatch:
+
+## Build and create the project on every push ...  this should be fiiiiine, right?
+jobs:
+  build:
+    strategy:
+      max-parallel: 1
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Prepare env
+        run: |
+          sudo apt-get install -y openjdk-17-jdk maven 
+      - uses: actions/checkout@v4
+      - name: Add workspace to git safe.directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: Build it
+        run: |
+          mvn -DskipTests=true clean install
+      - name: Persist build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: opennms-pgtimeseries-tss-plugin.kar
+          path: ./assembly/kar/target/opennms-pgtimeseries-tss-plugin.kar
+      - name: Release ${{ github.ref_name }}
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            ./assembly/kar/target/opennms-pgtimeseries-tss-plugin.kar
