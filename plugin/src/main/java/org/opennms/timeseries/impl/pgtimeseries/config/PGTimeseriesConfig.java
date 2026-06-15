@@ -13,6 +13,8 @@ public class PGTimeseriesConfig {
     private final boolean createTablesOnInstall;
     private final int maxBatchSize;
     private final int connectionPoolSize;
+    private final int flushMaxSamples;
+    private final long flushMaxIntervalMs;
 
     public PGTimeseriesConfig() {
         this(builder());
@@ -28,6 +30,8 @@ public class PGTimeseriesConfig {
         this.createTablesOnInstall = builder.createTablesOnInstall;
         this.maxBatchSize = builder.maxBatchSize;
         this.connectionPoolSize = builder.connectionPoolSize;
+        this.flushMaxSamples = builder.flushMaxSamples;
+        this.flushMaxIntervalMs = builder.flushMaxIntervalMs;
     }
 
     /** Will be called via blueprint. The builder can be called when not running as Osgi plugin. */
@@ -40,7 +44,9 @@ public class PGTimeseriesConfig {
             final String backfillStart,
             final boolean createTablesOnInstall,
             final int maxBatchSize,
-            final int connectionPoolSize) {
+            final int connectionPoolSize,
+            final int flushMaxSamples,
+            final long flushMaxIntervalMs) {
         this(builder()
                 .externalDatasourceURL(externalDatasourceURL)
                 .adminDatasourceURL(adminDatasourceURL)
@@ -50,7 +56,9 @@ public class PGTimeseriesConfig {
                 .backfillStart(backfillStart)
                 .createTablesOnInstall(createTablesOnInstall)
                 .maxBatchSize(maxBatchSize)
-                .connectionPoolSize(connectionPoolSize));
+                .connectionPoolSize(connectionPoolSize)
+                .flushMaxSamples(flushMaxSamples)
+                .flushMaxIntervalMs(flushMaxIntervalMs));
     }
 
     public String getExternalDatasourceURL() {
@@ -89,6 +97,16 @@ public class PGTimeseriesConfig {
         return connectionPoolSize;
     }
 
+    /** Maximum number of buffered samples that will accumulate across {@code store()} calls before a flush is triggered. */
+    public int getFlushMaxSamples() {
+        return flushMaxSamples;
+    }
+
+    /** Upper bound, in milliseconds, on how long a buffered sample may wait before it is flushed regardless of count. */
+    public long getFlushMaxIntervalMs() {
+        return flushMaxIntervalMs;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -103,6 +121,8 @@ public class PGTimeseriesConfig {
         private boolean createTablesOnInstall = true;
         private int maxBatchSize = 100;
         private int connectionPoolSize = 100;
+        private int flushMaxSamples = 1000;
+        private long flushMaxIntervalMs = 5000;
 
         public Builder externalDatasourceURL(final String externalDatasourceURL) {
             this.externalDatasourceURL = externalDatasourceURL;
@@ -149,6 +169,16 @@ public class PGTimeseriesConfig {
             return this;
         }
 
+        public Builder flushMaxSamples(final int flushMaxSamples) {
+            this.flushMaxSamples = flushMaxSamples;
+            return this;
+        }
+
+        public Builder flushMaxIntervalMs(final long flushMaxIntervalMs) {
+            this.flushMaxIntervalMs = flushMaxIntervalMs;
+            return this;
+        }
+
         public PGTimeseriesConfig build() {
             return new PGTimeseriesConfig(this);
         }
@@ -166,6 +196,8 @@ public class PGTimeseriesConfig {
                 .add("createTablesOnInstall=" + createTablesOnInstall)
                 .add("maxBatchSize='" + maxBatchSize + "'")
                 .add("connectionPoolSize='" + connectionPoolSize + "'" )
+                .add("flushMaxSamples='" + flushMaxSamples + "'")
+                .add("flushMaxIntervalMs='" + flushMaxIntervalMs + "'")
                 .toString();
     }
 }

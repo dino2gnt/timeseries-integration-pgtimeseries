@@ -7,7 +7,7 @@ import org.apache.karaf.shell.api.action.lifecycle.Reference;
 import org.apache.karaf.shell.api.action.lifecycle.Service;
 import org.apache.karaf.shell.support.table.ShellTable;
 import org.opennms.timeseries.impl.pgtimeseries.util.DBUtils;
-import org.opennms.timeseries.impl.pgtimeseries.util.PGTimeseriesDatabaseInitializer;
+import org.opennms.timeseries.impl.pgtimeseries.util.PGTimeseriesDatabaseHelpers;
 
 import java.sql.Connection;
 import java.sql.PreparedStatement;
@@ -33,7 +33,7 @@ public class ShowTableInfo implements Action {
         table.column("Index Size");
         table.column("Total Size");
         try {
-            Connection conn = PGTimeseriesDatabaseInitializer.getWhichDataSourceConnection();
+            Connection conn = PGTimeseriesDatabaseHelpers.getWhichDataSourceConnection();
             db.watch(conn);
             sql = "select table_id as table_name, pg_size_pretty(table_size_bytes), pg_size_pretty(index_size_bytes), pg_size_pretty(total_size_bytes) from ts_table_info";
             PreparedStatement statement = conn.prepareStatement(sql);

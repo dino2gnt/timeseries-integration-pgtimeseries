@@ -6,94 +6,30 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
-import java.util.Objects;
-
-import com.codahale.metrics.MetricRegistry;
-import com.codahale.metrics.jmx.JmxReporter;
-import com.zaxxer.hikari.HikariDataSource;
 
 import javax.sql.DataSource;
 
-import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.opennms.timeseries.impl.pgtimeseries.config.PGTimeseriesConfig;
 
 /**
  * The pgtimeseries plugin uses the opennms database. But it needs extra tables.
  * This class offers helper methods to check for and create the tables.
+ *
+ * <p>Datasource selection (local vs. external vs. admin) lives in {@link PGTimeseriesDatabaseHelpers};
+ * this class is concerned only with installing the extension and creating the schema.</p>
  */
-@AllArgsConstructor
 @Slf4j
 public class PGTimeseriesDatabaseInitializer {
 
-    private static DataSource dataSource;
-
-    private static PGTimeseriesConfig config;
-
-    private static HikariDataSource hikariExtDs = new HikariDataSource();
-    private static HikariDataSource hikariAdmDs = new HikariDataSource();
-    private static final MetricRegistry extMetrics = new MetricRegistry();
-    public static final JmxReporter ExtReporter = JmxReporter.forRegistry(extMetrics).inDomain("org.opennms.timeseries.impl.pgtimeseries").build();
-
-
     public PGTimeseriesDatabaseInitializer(final DataSource dataSource, final PGTimeseriesConfig config) {
-        this.dataSource = Objects.requireNonNull(dataSource);
-        this.config =  Objects.requireNonNull(config);
-    }
-
-    public static boolean isAdminDatasourceURLAvailable() throws SQLException {
-        try {
-            if (config.getAdminDatasourceURL() != null && !config.getAdminDatasourceURL().isEmpty()) {
-                if (hikariAdmDs.getJdbcUrl() == null || !hikariAdmDs.getJdbcUrl().equals(config.getAdminDatasourceURL())) {
-                    hikariAdmDs.setJdbcUrl(config.getAdminDatasourceURL());
-                    hikariAdmDs.setPoolName("pgtimeseries-admin");
-                    return true;
-                }
-                else {
-                    return true;
-                }
-            }
-        } catch ( Exception e) {
-            throw new RuntimeException(e);
-        }
-        return false;
-    }
-
-    public static boolean isExternalDatasourceURLAvailable() throws SQLException {
-        try {
-            if (config.getExternalDatasourceURL() != null && !config.getExternalDatasourceURL().isEmpty()) {
-                if (hikariExtDs.getJdbcUrl() == null || !hikariExtDs.getJdbcUrl().equals(config.getExternalDatasourceURL())) {
-                    hikariExtDs.setJdbcUrl(config.getExternalDatasourceURL());
-                    hikariExtDs.setPoolName("pgtimeseries-external");
-                    hikariExtDs.setMaximumPoolSize(config.getConnectionPoolSize());
-                    hikariExtDs.setMetricRegistry(extMetrics);
-                    ExtReporter.start();
-                    return true;
-                }
-                else {
-                    return true;
-                }
-            }
-        } catch ( Exception e) {
-            log.debug("Something threw an exception? : " + e);
-            return false;
-        }
-        return false;
-    }
-
-    public static Connection getWhichDataSourceConnection() throws SQLException {
-        if (isExternalDatasourceURLAvailable()) {
-            return hikariExtDs.getConnection();
-        }
-        else {
-            return dataSource.getConnection();
-        }
+        PGTimeseriesDatabaseHelpers.configure(dataSource, config);
     }
 
     public static boolean isPGTimeseriesExtensionInstalled() throws SQLException {
         DBUtils db = new DBUtils();
         try {
-            Connection conn = getWhichDataSourceConnection();
+            Connection conn = PGTimeseriesDatabaseHelpers.getWhichDataSourceConnection();
             if (conn == null) {
                 log.error("Hrmm. The connection is null and it shouldn't be. Did the connection fail?");
             }
@@ -113,7 +49,7 @@ public class PGTimeseriesDatabaseInitializer {
     static boolean doesPGTimeseriesTableExist(String tableName) throws SQLException {
         DBUtils db = new DBUtils();
         try {
-            Connection conn = getWhichDataSourceConnection();
+            Connection conn = PGTimeseriesDatabaseHelpers.getWhichDataSourceConnection();
             db.watch(conn);
             DatabaseMetaData metaData = conn.getMetaData();
             ResultSet tables = metaData.getTables(null, null, tableName, null);
@@ -131,11 +67,12 @@ public class PGTimeseriesDatabaseInitializer {
     }
 
     public static void createTables() throws SQLException {
+        final PGTimeseriesConfig config = PGTimeseriesDatabaseHelpers.getConfig();
         DBUtils db = new DBUtils();
         String sql;
         PreparedStatement statement;
         try {
-            Connection conn = getWhichDataSourceConnection();
+            Connection conn = PGTimeseriesDatabaseHelpers.getWhichDataSourceConnection();
             /*
             Need to create the tables as the regular user so the ownership is correct...
             if (isAdminDatasourceURLAvailable()) {
@@ -153,8 +90,8 @@ public class PGTimeseriesDatabaseInitializer {
             executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_time_series(keyid bigint, time TIMESTAMPTZ NOT NULL, value DOUBLE PRECISION NULL) PARTITION BY RANGE (time)");
             // create the metric sequence
             executeQuery(stmt, "CREATE SEQUENCE IF NOT EXISTS pgtimeseries_metric_seq no cycle");
-            // Metrics table
-            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_metric(keyid bigint, key TEXT NOT NULL PRIMARY KEY, UNIQUE (key))");
+            // Metrics table. The PRIMARY KEY on "key" already provides a unique index, so no extra UNIQUE/index is needed.
+            executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_metric(keyid bigint DEFAULT nextval('pgtimeseries_metric_seq'), key TEXT NOT NULL PRIMARY KEY)");
             // tag table
             executeQuery(stmt, "CREATE TABLE IF NOT EXISTS pgtimeseries_tag(keyid bigint, key TEXT, value TEXT NOT NULL, type TEXT NOT NULL, UNIQUE (keyid, key, value, type))");
             // let pg_timseries take over the table; default partition for 1 week duration
@@ -189,10 +126,15 @@ public class PGTimeseriesDatabaseInitializer {
             statement.setString(1, config.getcompressionPolicy());
             statement.executeQuery();
 
-            //Indexes.  This is a WAG.
-            executeQuery(stmt, "CREATE INDEX ON pgtimeseries_time_series(time DESC)");
-            executeQuery(stmt, "CREATE INDEX ON pgtimeseries_time_series(keyid)");
-            executeQuery(stmt, "CREATE INDEX ON pgtimeseries_metric(key)");
+            // Indexes.
+            // The fetch path always filters "WHERE keyid = ? AND time > ? AND time < ?", so a single composite
+            // index on (keyid, time DESC) serves it far better than the previous two separate single-column indexes.
+            executeQuery(stmt, "CREATE INDEX IF NOT EXISTS pgtimeseries_time_series_keyid_time_idx ON pgtimeseries_time_series(keyid, time DESC)");
+            // A standalone time index supports retention/compression maintenance that scans by time range.
+            executeQuery(stmt, "CREATE INDEX IF NOT EXISTS pgtimeseries_time_series_time_idx ON pgtimeseries_time_series(time DESC)");
+            // Note: pgtimeseries_metric(key) is already covered by its PRIMARY KEY, and pgtimeseries_tag lookups
+            // by keyid are covered by the leading column of the UNIQUE(keyid, key, value, type) constraint, so no
+            // further indexes are created here.
         } finally {
             db.cleanUp();
         }
@@ -201,10 +143,10 @@ public class PGTimeseriesDatabaseInitializer {
     public static void installExtension() throws SQLException {
         DBUtils db = new DBUtils();
         try {
-            Connection conn = getWhichDataSourceConnection();
-            if (isAdminDatasourceURLAvailable()) {
-                log.info("Using admin datasource to install extension: " + hikariAdmDs.toString());
-                conn = hikariAdmDs.getConnection();
+            Connection conn = PGTimeseriesDatabaseHelpers.getWhichDataSourceConnection();
+            if (PGTimeseriesDatabaseHelpers.isAdminDatasourceURLAvailable()) {
+                log.info("Using admin datasource to install extension.");
+                conn = PGTimeseriesDatabaseHelpers.getAdminConnection();
             }
             else {
                 log.info("Using configured datasource to install extension: " + conn.toString());
@@ -232,6 +174,7 @@ public class PGTimeseriesDatabaseInitializer {
     }
 
     public void initializeIfNeeded() throws SQLException {
+        final PGTimeseriesConfig config = PGTimeseriesDatabaseHelpers.getConfig();
         log.debug("Starting up pgtimeseries plugin with config: " + config.toString());
         if (config.getCreateTablesOnInstall()) {
             // Check Plugin

@@ -7,6 +7,8 @@
     <packaging>pom</packaging>
 
     <properties>
+        <!-- The one place to bump when cutting a release. All modules derive their version from this. -->
+        <revision>0.2.1</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <guava.version>33.5.0-jre</guava.version>
@@ -15,7 +17,7 @@
         <karaf.version>4.3.10</karaf.version>
         <log4j.version>2.25.2</log4j.version>
         <mockito.version>5.11.0</mockito.version>
-        <opennms.api.version>1.6.1</opennms.api.version>
+        <opennms.api.version>[1.6.1,2.0.0]</opennms.api.version>
         <osgi.version>6.0.0</osgi.version>
         <osgi.compendium.version>5.0.0</osgi.compendium.version>
         <osgi.enterprise.version>7.0.0</osgi.enterprise.version>
@@ -27,7 +29,7 @@
         <jrobin.version>1.6.0</jrobin.version>
     </properties>
 
-    <version>0.2.1</version>
+    <version>${revision}</version>
 
     <dependencyManagement>
         <dependencies>
@@ -197,6 +199,33 @@
             </plugins>
         </pluginManagement>
         <plugins>
+            <!-- Resolves the CI-friendly ${revision} in the POMs that get installed/deployed, so consumers
+                 never see a literal ${revision}. Inherited by every module. -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>flatten-maven-plugin</artifactId>
+                <version>1.2.7</version>
+                <configuration>
+                    <updatePomFile>true</updatePomFile>
+                    <flattenMode>resolveCiFriendliesOnly</flattenMode>
+                </configuration>
+                <executions>
+                    <execution>
+                        <id>flatten</id>
+                        <phase>process-resources</phase>
+                        <goals>
+                            <goal>flatten</goal>
+                        </goals>
+                    </execution>
+                    <execution>
+                        <id>flatten.clean</id>
+                        <phase>clean</phase>
+                        <goals>
+                            <goal>clean</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-enforcer-plugin</artifactId>

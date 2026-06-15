@@ -22,6 +22,8 @@
             <cm:property name="createTablesOnInstall" value = "true" />
             <cm:property name="maxBatchSize" value = "100" />
             <cm:property name="connectionPoolSize" value = "10" />
+            <cm:property name="flushMaxSamples" value = "1000" />
+            <cm:property name="flushMaxIntervalMs" value = "5000" />
         </cm:default-properties>
     </cm:property-placeholder>
 
@@ -35,6 +37,8 @@
         <argument value="${createTablesOnInstall}" />
         <argument value="${maxBatchSize}" />
         <argument value="${connectionPoolSize}" />
+        <argument value="${flushMaxSamples}" />
+        <argument value="${flushMaxIntervalMs}" />
     </bean>
 
     <reference id="dataSource" interface="javax.sql.DataSource" availability="mandatory" />

@@ -1,6 +1,5 @@
 package org.opennms.timeseries.impl.pgtimeseries.shell;
 
-import com.google.common.collect.Lists;
 import org.apache.commons.io.FilenameUtils;
 
 import com.google.common.base.Throwables;
@@ -14,15 +13,11 @@ import org.apache.karaf.shell.api.action.lifecycle.Reference;
 import org.apache.karaf.shell.api.action.lifecycle.Service;
 
 import org.opennms.integration.api.v1.timeseries.IntrinsicTagNames;
-import org.opennms.integration.api.v1.timeseries.Metric;
 import org.opennms.integration.api.v1.timeseries.Sample;
 import org.opennms.integration.api.v1.timeseries.StorageException;
-import org.opennms.integration.api.v1.timeseries.Tag;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableSample;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableMetric;
 import org.opennms.timeseries.impl.pgtimeseries.PGTimeseriesStorage;
-import org.opennms.timeseries.impl.pgtimeseries.util.DBUtils;
-import org.opennms.timeseries.impl.pgtimeseries.util.PGTimeseriesDatabaseInitializer;
 import org.opennms.timeseries.impl.pgtimeseries.util.rrd.ResourcePath;
 import org.opennms.timeseries.impl.pgtimeseries.util.rrd.AbstractDS;
 import org.opennms.timeseries.impl.pgtimeseries.util.rrd.AbstractRRA;
@@ -64,7 +59,9 @@ public class ImportFromRRD implements Action {
     @Reference
     private DataSource dataSource;
 
-    private final Map<String, Integer> MetricCache = new HashMap<String, Integer>();
+    @Reference
+    private PGTimeseriesStorage storage;
+
     //private final Path onmsHome = Paths.get(System.getProperty("opennms.home"));
     private final Path rrdDir = Paths.get(System.getProperty("rrd.base.dir"));
     private final Boolean StoreByGroup = Boolean.parseBoolean(System.getProperty("org.opennms.rrd.storeByGroup"));
@@ -163,6 +160,13 @@ public class ImportFromRRD implements Action {
                     // pass
                 }
                 System.out.print(".");
+            }
+            // All import threads have finished enqueuing samples; force a final flush so everything is
+            // persisted before we report completion (store() buffers asynchronously).
+            try {
+                this.storage.flush();
+            } catch (StorageException e) {
+                System.out.println("Final flush failed; some samples may not have been persisted: " + e);
             }
             System.out.println();
             System.out.println("Party on dudes!");
@@ -345,7 +349,7 @@ public class ImportFromRRD implements Action {
                                       final String group,
                                       final List<? extends AbstractDS> dataSources,
                                       final SortedMap<Long, List<Double>> samples,
-                                      final Properties props) throws SQLException, StorageException {
+                                      final Properties props) throws StorageException {
 
         // Transform the RRD samples into OPA Samples
         List<Sample> batch = new ArrayList<>(this.batchSize);
@@ -367,14 +371,14 @@ public class ImportFromRRD implements Action {
                 }
 
                 if (batch.size() >= this.batchSize) {
-                    store(batch);
+                    this.storage.store(batch);
                     batch = new ArrayList<>(this.batchSize);
                 }
             }
         }
 
         if (!batch.isEmpty()) {
-            store(batch);
+            this.storage.store(batch);
         }
     }
 
@@ -527,111 +531,5 @@ public class ImportFromRRD implements Action {
             this.foreignSource = foreignSource;
             this.foreignId = foreignId;
         }
-    }
-    public void store(List<Sample> entries) throws StorageException, SQLException {
-        String sample_sql = "INSERT INTO pgtimeseries_time_series(time, keyid, value)  values (?, ?, ?)";
-        String metric_sql = "INSERT INTO pgtimeseries_metric(keyid, key) VALUES(nextid('pgtimeseries_metric_seq'), ?) ON CONFLICT (key) DO NOTHING RETURNING keyid";
-
-        final DBUtils db = new DBUtils(this.getClass());
-        int batchSize = 0;
-        Integer keyid = null;
-        Connection connection = null;
-        try {
-            if (PGTimeseriesDatabaseInitializer.isExternalDatasourceURLAvailable()) {
-                connection = PGTimeseriesDatabaseInitializer.getWhichDataSourceConnection();
-                System.out.println("Store got connection: " + connection.toString());
-            } else {
-                connection = this.dataSource.getConnection();
-            }
-            db.watch(connection);
-            PreparedStatement mps = connection.prepareStatement(metric_sql);
-            PreparedStatement sps = connection.prepareStatement(sample_sql);
-            db.watch(sps);
-            db.watch(mps);
-            // Partition the samples into collections smaller than max_batch_size
-            for (List<Sample> batch : Lists.partition(entries, this.batchSize)) {
-                System.out.println("Inserting "+ batch.size()+" samples");
-                for (Sample sample : batch) {
-                    if (MetricCache.containsKey(sample.getMetric().getKey())) {
-                        keyid = MetricCache.get(sample.getMetric().getKey());
-                    } else {
-                        keyid = getMetricID(sample.getMetric().getKey());
-                        if (keyid == null) {
-                            mps.setString(1, sample.getMetric().getKey());
-                            ResultSet mrs = mps.executeQuery();
-                            db.watch(mrs);
-                            while (mrs.next()) {
-                                keyid = mrs.getInt("keyid");
-                            }
-                            mrs.close();
-                        }
-                        // update the cache
-                        MetricCache.put(sample.getMetric().getKey(), keyid);
-                    }
-                    sps.setTimestamp(1, new Timestamp(sample.getTime().toEpochMilli()));
-                    sps.setInt(2, keyid);
-                    sps.setDouble(3, sample.getValue());
-                    sps.addBatch();
-                    storeTags(connection, keyid, ImmutableMetric.TagType.intrinsic, sample.getMetric().getIntrinsicTags());
-                    storeTags(connection, keyid, ImmutableMetric.TagType.meta, sample.getMetric().getMetaTags());
-                    storeTags(connection, keyid, ImmutableMetric.TagType.external, sample.getMetric().getExternalTags());
-                }
-                batchSize = batch.size();
-                sps.executeBatch();
-            }
-        } catch (SQLException e) {
-            System.out.println("An error occurred while inserting samples. Some sample may be lost." + e);
-            throw new StorageException(e);
-        } finally {
-            db.cleanUp();
-        }
-        }
-
-        private void storeTags(final Connection connection, final Integer keyid, final ImmutableMetric.TagType tagType, final Collection<Tag> tags) throws SQLException {
-        final String sql = "INSERT INTO pgtimeseries_tag(keyid, key, value, type)  values (?, ?, ?, ?) ON CONFLICT (keyid, key, value, type) DO NOTHING;";
-        final DBUtils db = new DBUtils(this.getClass());
-        try {
-            PreparedStatement ps = connection.prepareStatement(sql);
-            db.watch(ps);
-            for (Tag tag : tags) {
-                ps.setInt(1, keyid);
-                ps.setString(2, tag.getKey());
-                ps.setString(3, tag.getValue());
-                ps.setString(4, tagType.name());
-                ps.addBatch();
-            }
-            ps.executeBatch();
-            ps.close();
-        } finally {
-            db.cleanUp();
-        }
-    }
-    private Integer getMetricID (String key) {
-        final DBUtils db = new DBUtils(this.getClass());
-        Connection connection = null;
-        Integer keyid = null;
-        try {
-            String sql = "select keyid from pgtimeseries_metric where key=?";
-            if (PGTimeseriesDatabaseInitializer.isExternalDatasourceURLAvailable()) {
-                connection = PGTimeseriesDatabaseInitializer.getWhichDataSourceConnection();
-                System.out.println("getMetricID got connection: " + connection.toString());
-            } else {
-                connection = this.dataSource.getConnection();
-            }
-            db.watch(connection);
-
-            PreparedStatement ps = connection.prepareStatement(sql);
-            db.watch(ps);
-            ResultSet rs = ps.executeQuery();
-            db.watch(rs);
-            // should only return one result
-            while (rs.next()) {
-                keyid = rs.getInt("keyid");
-            }
-            rs.close();
-        } catch (SQLException e) {
-            System.out.println("Error querying keyid for metric '"+key+"': " + e);
-        }
-        return keyid;
     }
 }

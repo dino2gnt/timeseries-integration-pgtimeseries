@@ -3,7 +3,7 @@
     <parent>
         <groupId>org.opennms.plugins.timeseries.pgtimeseries</groupId>
         <artifactId>timeseries-pgtimeseries-plugin</artifactId>
-        <version>0.2.1</version>
+        <version>${revision}</version>
     </parent>
     <modelVersion>4.0.0</modelVersion>
     <artifactId>pgtimeseries-tss-plugin</artifactId>
@@ -130,12 +130,6 @@
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-slf4j-impl</artifactId>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.testcontainers</groupId>
-            <artifactId>testcontainers</artifactId>
-            <version>1.14.3</version>
             <scope>test</scope>
         </dependency>
         <dependency>
