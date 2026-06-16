@@ -27,7 +27,7 @@ jobs:
       - name: Add workspace to git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Run tests (API ${{ matrix.api-version }})
-        run: mvn -e -B --no-transfer-progress -Dopennms.api.version=${{ matrix.api-version }} test
+        run: mvn -e -B --no-transfer-progress -Dopennms.api.version=${{ matrix.api-version }} test install
 
   # Builds the kar and publishes a release. Only runs for tag pushes matching v<major>.<minor>.<patch>,
   # and only after the tests pass.

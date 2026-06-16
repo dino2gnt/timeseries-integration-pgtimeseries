@@ -61,7 +61,7 @@
                 <version>${karaf.version}</version>
                 <extensions>true</extensions>
                 <configuration>
-                  <skip>${skipTests}</skip>
+                  <skip>${karaf.verify.skip}</skip>
                 </configuration>
                 <executions>
                     <execution>
