@@ -5,21 +5,27 @@ It stores the data in a pg_timeseries table.
 It can be used in OpenNMS to store and retrieve timeseries data.
 
 ## Prerequisite
-* PostgreSQL 13 or greater
-* The pg_timeseries plugin must be installed in the target postgres database. It is available from [dino2gnt/pg_timeseries_extension](https://github.com/dino2gnt/pg_timeseries_extension/releases)
+* PostgreSQL 16 or greater
+* The pg_timeseries plugin must be installed in the target postgres database. It is available from [ChuckHend/pg_timeseries](https://github.com/ChuckHend/pg_timeseries)
 * The pg_timeseries extension depends on:
   * The [pg_cron](https://github.com/citusdata/pg_cron) extension
   * The [pg_partman](https://github.com/pgpartman/pg_partman) extension
+* And optionally makes use of:
+  * The [citus columnar](https://github.com/citusdata/citus/tree/main/src/backend/columnar) extension for compression
+  * A fork of [pg_ivm](https://github.com/ChuckHend/pg_ivm) for ``make_view_incremental``
 
 
 ## Usage
 ### Compile from source
-* compile: ``mvn clean install``.  You will probably have to add `-Dskiptests=True`; actual tests are on the roadmap.
+* compile: ``mvn clean install``.
 * copy the `.kar` from the `./assembly/kar/target` folder to `$OPENNMS_HOME/deploy`
+
 ### Or grab a release kar
 * See "Releases". We compile for OpenNMS Plugin API versions ``1.6.1`` (Meridian 2024, 2025, Horizon 35 and older) and ``2.0.0`` (Horizon 36 and newer, Meridian 2026 and newer)
+
 ### superuser database operations
 Superuser access to the database is required for the plugin to install extensions and create the required tables.
+
 #### Define a JDBC url for a superuser connection:
 * `echo 'adminDatasourceURL="jdbc:postgresql://localhost:5432/opennms?user=postgres&password=opennms"' >> $OPENNMS_HOME/etc/org.opennms.plugins.pgtimeseries.config.cfg`
 
@@ -27,6 +33,7 @@ Superuser access to the database is required for the plugin to install extension
 * `echo "cron.database_name = 'opennms' >> /var/lib/pgsql/data/postgresql.conf`
 * `echo "shared_preload_libraries = 'citus,pg_cron'" >> /var/lib/pgsql/data/postgresql.conf`
 * Restart postgresql
+
 ### enable the Time Series Storage layer
 * In the `${OPENMS_HOME}` directory: ``echo "org.opennms.timeseries.strategy=integration" >> etc/opennms.properties.d/timeseries.properties``
 
