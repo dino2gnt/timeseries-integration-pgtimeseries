@@ -25,7 +25,9 @@
                         </goals>
                         <configuration>
                             <featuresFile>mvn:org.opennms.plugins.timeseries.pgtimeseries/karaf-features/${project.version}/xml</featuresFile>
-                            <finalName>opennms-pgtimeseries-tss-plugin</finalName>
+                            <!-- Include the targeted API version so kars built for different opennms.api.version
+                                 values (e.g. -Dopennms.api.version=2.0.0) don't overwrite each other. -->
+                            <finalName>opennms-pgtimeseries-tss-plugin-opa-v${opennms.api.version}</finalName>
                             <ignoreDependencyFlag>true</ignoreDependencyFlag>
                             <archive>
                               <manifestEntries>

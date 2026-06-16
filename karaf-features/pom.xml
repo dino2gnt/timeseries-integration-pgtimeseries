@@ -66,7 +66,11 @@
                 <executions>
                     <execution>
                         <id>verify</id>
-                        <phase>process-resources</phase>
+                        <!-- Run in the verify phase (its natural home), not process-resources: feature
+                             verification needs the plugin bundle to have been packaged/installed, which has not
+                             happened during 'mvn test'. This keeps 'mvn test' fast and green while still
+                             verifying the feature during 'mvn install'/'mvn verify'. -->
+                        <phase>verify</phase>
                         <goals>
                             <goal>verify</goal>
                         </goals>

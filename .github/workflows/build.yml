@@ -7,9 +7,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  # Runs on every push (any branch) and on version tags. Compiles and runs the tests.
+  # Runs on every push (any branch) and on version tags. Compiles and runs the tests against each
+  # targeted OpenNMS Integration API version.
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        api-version: ['1.6.1', '2.0.0']
     steps:
       - name: Prepare env
         run: |
@@ -18,8 +23,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Add workspace to git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Run tests
-        run: mvn -B --no-transfer-progress test
+      - name: Run tests (API ${{ matrix.api-version }})
+        run: mvn -B --no-transfer-progress -Dopennms.api.version=${{ matrix.api-version }} test
 
   # Builds the kar and publishes a release. Only runs for tag pushes matching v<major>.<minor>.<patch>,
   # and only after the tests pass.
@@ -29,6 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    strategy:
+      # Build (and release) one kar per targeted OpenNMS Integration API version.
+      matrix:
+        api-version: ['1.6.1', '2.0.0']
     steps:
       - name: Prepare env
         run: |
@@ -37,16 +46,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Add workspace to git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
-      - name: Build it
-        run: mvn -B --no-transfer-progress -DskipTests=true clean install
+      - name: Build it (API ${{ matrix.api-version }})
+        run: mvn -B --no-transfer-progress -DskipTests=true -Dopennms.api.version=${{ matrix.api-version }} clean install
       - name: Persist build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: opennms-pgtimeseries-tss-plugin.kar
-          path: ./assembly/kar/target/opennms-pgtimeseries-tss-plugin.kar
+          name: opennms-pgtimeseries-tss-plugin-opa-v${{ matrix.api-version }}.kar
+          path: ./assembly/kar/target/opennms-pgtimeseries-tss-plugin-opa-v${{ matrix.api-version }}.kar
       - name: Release ${{ github.ref_name }}
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
           files: |
-            ./assembly/kar/target/opennms-pgtimeseries-tss-plugin.kar
+            ./assembly/kar/target/opennms-pgtimeseries-tss-plugin-opa-v${{ matrix.api-version }}.kar

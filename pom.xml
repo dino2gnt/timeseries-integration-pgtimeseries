@@ -17,7 +17,9 @@
         <karaf.version>4.3.10</karaf.version>
         <log4j.version>2.25.2</log4j.version>
         <mockito.version>5.11.0</mockito.version>
-        <opennms.api.version>[1.6.1,2.0.0]</opennms.api.version>
+<!-- Targeted OpenNMS Integration API version. Override to build for a different API, e.g.
+             -Dopennms.api.version=1.6.1 ; the kar name carries this value so both can be built. -->
+        <opennms.api.version>2.0.0</opennms.api.version>
         <osgi.version>6.0.0</osgi.version>
         <osgi.compendium.version>5.0.0</osgi.compendium.version>
         <osgi.enterprise.version>7.0.0</osgi.enterprise.version>

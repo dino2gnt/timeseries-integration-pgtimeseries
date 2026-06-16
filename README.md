@@ -21,9 +21,9 @@ Superuser access to the database is required for the plugin to install extension
 #### Define a JDBC url for a superuser connection:
 * `echo 'adminDatasourceURL="jdbc:postgresql://localhost:5432/opennms?user=postgres&password=opennms"' >> $OPENNMS_HOME/etc/org.opennms.plugins.pgtimeseries.config.cfg`
 
-### Add config for `pg_cron`
+### Add config for `pg_cron` and `citus_columnar`
 * `echo "cron.database_name = 'opennms' >> /var/lib/pgsql/data/postgresql.conf`
-* `echo "shared_preload_libraries = 'pg_cron'" >> /var/lib/pgsql/data/postgresql.conf`
+* `echo "shared_preload_libraries = 'citus,pg_cron'" >> /var/lib/pgsql/data/postgresql.conf`
 * Restart postgresql
 ### enable the Time Series Storage layer
 * In the `${OPENMS_HOME}` directory: ``echo "org.opennms.timeseries.strategy=integration" >> etc/opennms.properties.d/timeseries.properties``
@@ -46,6 +46,8 @@ Superuser access to the database is required for the plugin to install extension
    *  **``createTablesOnInstall``**: The timeseries plugin will attempt to install the extension and create its tables on install if this is true.  If this is false, it will skip these steps and installation can be performed with the ``opennms-pgtimeseries:install`` Karaf shell command.
    *  **``maxBatchSize``**: Metrics are batched out to PostgreSQL; this is the largest number of metrics that will be written in as a single batch.  Default: `100`.
    *  **``connectionPoolSize``**: If ``externalDatasourceURL`` is defined, a connection pool is created for this data source. This limits the total number of pooled connections to the target PostgreSQL database.  Default: ``10``
+   *  **``flushMaxSamples``**: Samples are buffered across collection sets and flushed once this many are pending. Default: ``1000``
+   *  **``flushMaxIntervalMs``**: Upper bound, in milliseconds, on how long a buffered sample waits before being flushed, regardless of ``flushMaxSamples``. Default: ``5000``
  
 ### Karaf shell commands
  * ``opennms-pgtimeseries:stats``: Shows sample read, write, and lost metrics for the plugin.
@@ -57,15 +59,4 @@ Superuser access to the database is required for the plugin to install extension
 
 ## Links:
 * Introduction to the Time Series Storage Layer: https://docs.opennms.com/horizon/latest/operation/operation/timeseries/introduction.html
-* pg_timeseries: https://github.com/tembo-io/pg_timeseries
-
-## Roadmap / To do:
-* (Done) Make the datasources configurable to allow timeseries to be persisted to an external database
-* (Done) Use the `opennms-admin` datasource to install the extensions and create the tables if possible
-* (Done) Make all other options configurable at install (retention, compression, partition interval, etc) and at runtime via Karaf shell commands where possible
-* (Done) Add Karaf shell commands to expose [ts_table_info](https://github.com/tembo-io/pg_timeseries/blob/main/doc/reference.md#ts_table_info) and [ts_part_info](https://github.com/tembo-io/pg_timeseries/blob/main/doc/reference.md#ts_part_info)
-* (Done) Rename `show-ts-config` to `ts-config` and add options to allow the retention and compression intervals to be set on the fly. (pgtimeseries doesn't support changing the partition interval yet)
-* (Done) Figure out how to use the external data source everywhere the regular datasource is used.
-* (Done but rough) Make something that can backfill the database from existing rrd or jrb
-* Move connection bits from the initializer to a separate helper class
-* It probably needs more tests.  I don't know how to write tests. PRs welcome.
+* pg_timeseries: https://github.com/ChuckHend/pg_timeseries
