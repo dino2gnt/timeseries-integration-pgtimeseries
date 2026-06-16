@@ -16,10 +16,8 @@ jobs:
       matrix:
         api-version: ['1.6.1', '2.0.0']
     steps:
-      - uses: actions/checkout@v4
-      # Use Temurin JDK + the runner's preinstalled Apache Maven. Do NOT apt-install maven: Debian's
-      # repackaged Maven has a different resolver/plugin set that mis-handles the reactor's attached
-      # karaf-features xml artifact (kar build then fails to find karaf-features:xml).
+      - uses: actions/checkout@v6
+      # Temurin JDK + the runner's preinstalled Apache Maven (with dependency caching).
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
