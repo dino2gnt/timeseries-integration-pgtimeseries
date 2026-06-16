@@ -19,7 +19,7 @@ jobs:
       - uses: actions/checkout@v6
       # Temurin JDK + the runner's preinstalled Apache Maven (with dependency caching).
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -27,7 +27,7 @@ jobs:
       - name: Add workspace to git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Run tests (API ${{ matrix.api-version }})
-        run: mvn -e -X -B --no-transfer-progress -Dopennms.api.version=${{ matrix.api-version }} test install
+        run: mvn -e -B --no-transfer-progress -Dopennms.api.version=${{ matrix.api-version }} test
 
   # Builds the kar and publishes a release. Only runs for tag pushes matching v<major>.<minor>.<patch>,
   # and only after the tests pass.
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/checkout@v6
       # Use Temurin JDK + the runner's preinstalled Apache Maven (not Debian's apt maven) -- see the test job.
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
