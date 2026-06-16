@@ -34,8 +34,12 @@ Superuser access to the database is required for the plugin to install extension
 * `echo "shared_preload_libraries = 'citus,pg_cron'" >> /var/lib/pgsql/data/postgresql.conf`
 * Restart postgresql
 
-### enable the Time Series Storage layer
+### Enable the Time Series Storage layer
 * In the `${OPENMS_HOME}` directory: ``echo "org.opennms.timeseries.strategy=integration" >> etc/opennms.properties.d/timeseries.properties``
+
+### Enable storeByForeignSource
+* In the `${OPENMS_HOME}` directory: ``echo "org.opennms.rrd.storeByForeignSource=true" >> etc/opennms.properties.d/timeseries.properties``
+* *Updating system properties requires restarting OpenNMS
 
 ### Activate in the Karaf shell:
   * ``ssh -p 8101 admin@localhost``
