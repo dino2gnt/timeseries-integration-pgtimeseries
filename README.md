@@ -16,6 +16,8 @@ It can be used in OpenNMS to store and retrieve timeseries data.
 ### Compile from source
 * compile: ``mvn clean install``.  You will probably have to add `-Dskiptests=True`; actual tests are on the roadmap.
 * copy the `.kar` from the `./assembly/kar/target` folder to `$OPENNMS_HOME/deploy`
+### Or grab a release kar
+* See "Releases". We compile for OpenNMS Plugin API versions ``1.6.1`` (Meridian 2024, 2025, Horizon 35 and older) and ``2.0.0`` (Horizon 36 and newer, Meridian 2026 and newer)
 ### superuser database operations
 Superuser access to the database is required for the plugin to install extensions and create the required tables.
 #### Define a JDBC url for a superuser connection:

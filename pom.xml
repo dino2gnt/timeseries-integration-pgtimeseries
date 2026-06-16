@@ -8,7 +8,7 @@
 
     <properties>
         <!-- The one place to bump when cutting a release. All modules derive their version from this. -->
-        <revision>0.2.1</revision>
+        <revision>0.2.2</revision>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <guava.version>33.5.0-jre</guava.version>
