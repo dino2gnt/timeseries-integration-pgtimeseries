@@ -16,11 +16,16 @@ jobs:
       matrix:
         api-version: ['1.6.1', '2.0.0']
     steps:
-      - name: Prepare env
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk maven
       - uses: actions/checkout@v4
+      # Use Temurin JDK + the runner's preinstalled Apache Maven. Do NOT apt-install maven: Debian's
+      # repackaged Maven has a different resolver/plugin set that mis-handles the reactor's attached
+      # karaf-features xml artifact (kar build then fails to find karaf-features:xml).
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
       - name: Add workspace to git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Run tests (API ${{ matrix.api-version }})
@@ -39,11 +44,14 @@ jobs:
       matrix:
         api-version: ['1.6.1', '2.0.0']
     steps:
-      - name: Prepare env
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y openjdk-17-jdk maven
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      # Use Temurin JDK + the runner's preinstalled Apache Maven (not Debian's apt maven) -- see the test job.
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
       - name: Add workspace to git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Build it (API ${{ matrix.api-version }})
