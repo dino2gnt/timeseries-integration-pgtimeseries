@@ -53,6 +53,9 @@ public class ImportFromRRD implements Action {
     @Option(name = "-b", aliases = "--batch-size --batchsize --batch", description = "Number of samples to batch out the the TSS ringbuffer at one time.", required = false, multiValued = false)
     int batchSize = 100;
 
+    @Option(name = "-s", aliases = "--storage-tool", description = "Metric storage tool to migrate from, JRobin or RRDtool, accepts '[rrdtool|rrd|jrobin|jrb]'", required = true, multiValued = false)
+    String tool = "rrd";
+
     @Option(name = "--yes-really", description = "Yes, I really, really want to read and import all local rrd/jrb timeseries data.", required = false, multiValued = false)
     boolean yesreally = false;
 
@@ -87,22 +90,6 @@ public class ImportFromRRD implements Action {
             return null;
         }
 
-        // Initialize node ID to foreign ID mapping
-        try (
-            final Connection conn = dataSource.getConnection();
-            final Statement st = conn.createStatement();
-            final ResultSet rs = st.executeQuery("SELECT nodeid, foreignsource, foreignid from node n")) {
-            while (rs.next()) {
-                foreignIds.put(rs.getInt("nodeid"),
-                        new ForeignId(rs.getString("foreignsource"),
-                                rs.getString("foreignid")));
-            }
-        } catch (final Exception e) {
-            throw new RuntimeException(e);
-        }
-
-        System.out.println("Found " + foreignIds.size() + " nodes on the database.");
-
         if (StoreByGroup) {
             storageStrategy = StorageStrategy.STORE_BY_GROUP;
             System.out.println("Using storeByGroup");
@@ -111,16 +98,37 @@ public class ImportFromRRD implements Action {
             storageStrategy = StorageStrategy.STORE_BY_METRIC;
             System.out.println("Using store by metric");
         }
-
-        if (System.getProperty("org.opennms.rrd.strategyClass") == null || System.getProperty("org.opennms.rrd.strategyClass").equals("org.opennms.netmgt.rrd.jrobin.JRobinRrdStrategy")) {
-            storageTool = StorageTool.JROBIN;
-            System.out.println("Using JRobin strategy");
+        /*
+        Because the defaults have changed, we can't reliably determine based on properties which strategyClass we're using, so we have to add an option to select it.
+        */
+        if (!Objects.equals(tool, "rrd") && !Objects.equals(tool, "rrdtool") && !Objects.equals(tool, "jrb") && !Objects.equals(tool, "jrobin")) {
+            System.out.println();
+            System.out.println("Invalid storage tool selected.  Must be one of 'rrdtool', 'rrd', 'jrobin', or 'jrb'.");
+            System.out.println();
+            return null;
         }
-        else if (System.getProperty("org.opennms.rrd.strategyClass") != null && (System.getProperty("org.opennms.rrd.strategyClass").equals("org.opennms.netmgt.rrd.rrdtool.MultithreadedJniRrdStrategy") ||
-                System.getProperty("org.opennms.rrd.strategyClass").equals("org.opennms.netmgt.rrd.rrdtool.JniRrdStrategy"))) {
+        if (Objects.equals(tool, "rrd") || Objects.equals(tool, "rrdtool")) {
             storageTool = StorageTool.RRDTOOL;
             System.out.println("Using RRDtool strategy");
         }
+        if (Objects.equals(tool, "jrb") || Objects.equals(tool, "jrobin")) {
+            storageTool = StorageTool.JROBIN;
+            System.out.println("Using JRobin strategy");
+        }
+        // Initialize node ID to foreign ID mapping
+        try (
+                final Connection conn = dataSource.getConnection();
+                final Statement st = conn.createStatement();
+                final ResultSet rs = st.executeQuery("SELECT nodeid, foreignsource, foreignid from node n")) {
+            while (rs.next()) {
+                foreignIds.put(rs.getInt("nodeid"),
+                        new ForeignId(rs.getString("foreignsource"),
+                                rs.getString("foreignid")));
+            }
+        } catch (final Exception e) {
+            throw new RuntimeException(e);
+        }
+        System.out.println("Found " + foreignIds.size() + " nodes on the database.");
 
         try {
             System.out.println("Using " + threads + " threads for import");
