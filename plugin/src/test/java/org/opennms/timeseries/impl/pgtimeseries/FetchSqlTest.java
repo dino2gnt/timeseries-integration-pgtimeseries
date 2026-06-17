@@ -57,6 +57,11 @@ public class FetchSqlTest {
         assertTrue("counters compute a delta via lag()", sql.contains("lag(value)"));
         assertTrue("NONE on a counter sums the deltas", sql.contains("sum(d.deltaval)"));
         assertTrue("rate divides the delta by the step", sql.contains("/ 30"));
+        // RRDtool-style counter-wrap correction: 32-bit (2^32) then 64-bit (2^64) on a negative delta,
+        // and NULL (-> NaN) if it is still negative after correction (e.g. a counter reset).
+        assertTrue("32-bit wrap correction", sql.contains("delta + 4294967296::double precision >= 0"));
+        assertTrue("64-bit wrap correction", sql.contains("delta + 18446744073709551616::double precision >= 0"));
+        assertTrue("still-negative -> NaN", sql.contains("ELSE NULL"));
     }
 
     @Test

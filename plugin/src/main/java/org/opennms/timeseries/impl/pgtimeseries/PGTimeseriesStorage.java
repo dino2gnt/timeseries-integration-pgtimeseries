@@ -470,11 +470,25 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
     private static final String COUNTER_SQL =
             "WITH buckets AS ( " +
                 "SELECT n AS start_time FROM generate_series('%s', '%s', '%s seconds'::interval) AS n " +
-            "), binned AS ( " +
+            "), deltas AS ( " +
                 "SELECT date_bin('%s seconds'::interval, time, '%s') AS bucket, " +
-                       "value - lag(value) OVER (ORDER BY time) AS deltaval " +
+                       "value - lag(value) OVER (ORDER BY time) AS delta " +
                 "FROM pgtimeseries_time_series " +
                 "WHERE keyid = ? AND time > '%s' AND time < '%s' " +
+            "), binned AS ( " +
+                // RRDtool-style counter-wrap correction: a negative delta means the counter overflowed.
+                // First add 2^32 (assume a 32-bit counter); if it is still negative it must have been a
+                // 64-bit counter, so add 2^64. If the result is STILL negative the value is not a plausible
+                // wrap (e.g. a counter reset), so emit NULL -> NaN rather than a bogus value. Values are
+                // double precision, matching RRDtool's own (double-based) arithmetic.
+                "SELECT bucket, " +
+                       "CASE " +
+                           "WHEN delta >= 0 THEN delta " +
+                           "WHEN delta + 4294967296::double precision >= 0 THEN delta + 4294967296::double precision " +
+                           "WHEN delta + 18446744073709551616::double precision >= 0 THEN delta + 18446744073709551616::double precision " +
+                           "ELSE NULL " +
+                       "END AS deltaval " +
+                "FROM deltas " +
             ") " +
             "SELECT b.start_time AS step, COALESCE(%s(d.deltaval) / %s, 'NaN') AS aggregation " +
             "FROM buckets b LEFT JOIN binned d ON d.bucket = b.start_time " +
