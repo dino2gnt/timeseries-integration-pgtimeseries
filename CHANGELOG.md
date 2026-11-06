@@ -24,6 +24,12 @@ pg_timeseries, pg_partman and pg_cron into the plugin itself.
 * `ts-config` validates intervals: bare numbers (which PostgreSQL reads as seconds), non-positive
   intervals, widths under a minute, and retention or compression shorter than the partition width are
   rejected with an explanation instead of being applied.
+* An index on `pgtimeseries_tag (key, value)`, created on start-up when missing. `findMetrics` (tag
+  lookups behind resource graphs and the resource browser) used to scan the whole tag table.
+* Configuration property `maxBufferedSamples` (default 100000): the write-behind buffer is bounded. A
+  collection set that does not fit is refused with an error OpenNMS counts as dropped, instead of
+  growing the heap without bound while the database is down. Refusals are counted in a new
+  `samplesRejected` meter; `metricCacheSize` is now a gauge of the actual cache size.
 
 ### Changed
 * Installation needs no superuser, no `CREATE EXTENSION`, no `shared_preload_libraries` and no
@@ -45,14 +51,33 @@ pg_timeseries, pg_partman and pg_cron into the plugin itself.
   maintenance thread stopped when the feature is uninstalled.
 * Integration tests run against a stock `postgres:16-alpine` image; one upgrade test still uses the
   pg_timeseries image.
+* Fetch queries bind their timestamps and step as parameters. They used to be rendered as local-time
+  literals read back in the session's zone, so a window touching the hour that repeats when daylight
+  saving time ends was ambiguous (and could collapse to nothing).
+* `delete()` removes a metric's samples, tags and metric row in one transaction.
+* The external and admin connection pools are rebuilt when their URL changes and errors setting them up
+  are reported. A changed `externalDatasourceURL` used to be ignored, with reads and writes silently going
+  to the local OpenNMS database. The external pool enables pgjdbc's `reWriteBatchedInserts`, which turns
+  each flush batch into multi-row INSERTs.
+* `backfill-from-rrd` builds one metric per RRD data source instead of one per sample, parses with cached
+  JAXB contexts, drains rrdtool's stderr (a chatty rrdtool could deadlock the import) and reports a
+  failed `rrdtool dump` with its exit status and message. A missing `rrd.base.dir` is an explanation,
+  not an exception.
+* The built-in default for `connectionPoolSize` is 10, matching the blueprint and the documentation (the
+  builder default was 100).
+* HikariCP upgraded from 3.4.5 to 5.1.0.
 
 ### Fixed
 * Metric ids cached during a failed flush are evicted again, so a retry cannot write samples that
   reference a rolled-back metric row.
+* The metric id cache is a `ConcurrentHashMap`. It was a plain `HashMap` shared between the flush thread
+  and every reader thread, and a lookup of an unknown metric cached a null entry.
 
 ### Removed
 * The `timeseries` extension install path (`PGTimeseriesDatabaseInitializer`) and the hard-coded
   `opennms` owner assignment of its tables.
+* Unused build configuration (a testcontainers dependency, a build-helper source root) and the tracked
+  IntelliJ module file.
 
 ## 0.2.3
 * Handle counter wraps more gracefully.

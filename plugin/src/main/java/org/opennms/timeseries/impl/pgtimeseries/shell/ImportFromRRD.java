@@ -13,6 +13,7 @@ import org.apache.karaf.shell.api.action.lifecycle.Reference;
 import org.apache.karaf.shell.api.action.lifecycle.Service;
 
 import org.opennms.integration.api.v1.timeseries.IntrinsicTagNames;
+import org.opennms.integration.api.v1.timeseries.Metric;
 import org.opennms.integration.api.v1.timeseries.Sample;
 import org.opennms.integration.api.v1.timeseries.StorageException;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableSample;
@@ -65,8 +66,8 @@ public class ImportFromRRD implements Action {
     @Reference
     private PGTimeseriesStorage storage;
 
-    //private final Path onmsHome = Paths.get(System.getProperty("opennms.home"));
-    private final Path rrdDir = Paths.get(System.getProperty("rrd.base.dir"));
+    /** Resolved in {@link #execute()}: a missing {@code rrd.base.dir} must be a message, not a failure to even construct the command. */
+    private Path rrdDir;
     private final Boolean StoreByGroup = Boolean.parseBoolean(System.getProperty("org.opennms.rrd.storeByGroup"));
     private StorageStrategy storageStrategy;
     private enum StorageStrategy {
@@ -87,6 +88,17 @@ public class ImportFromRRD implements Action {
             System.out.println();
             System.out.println("This utility performs significant work and can severely bloat and/or pollute your timeseries store. Providing '--yes-really' shows you understand the risks and is required.");
             System.out.println();
+            return null;
+        }
+
+        final String rrdBaseDir = System.getProperty("rrd.base.dir");
+        if (rrdBaseDir == null || rrdBaseDir.isBlank()) {
+            System.out.println("The system property rrd.base.dir is not set, so there is nowhere to read RRD/JRB files from.");
+            return null;
+        }
+        this.rrdDir = Paths.get(rrdBaseDir);
+        if (!Files.isDirectory(this.rrdDir)) {
+            System.out.println("rrd.base.dir (" + this.rrdDir + ") is not a directory.");
             return null;
         }
 
@@ -326,16 +338,10 @@ public class ImportFromRRD implements Action {
         }
     }
 
-    private Sample toSample(AbstractDS ds, ResourcePath resourcePath, String group, Instant timestamp, double value, Properties props) {
-
-        String type;
-        if (ds.isCounter()) {
-            type = "count";
-        } else {
-            type = "gauge";
-        }
-
-        ImmutableMetric.MetricBuilder metric = ImmutableMetric.builder()
+    /** The metric a data source maps to. Built once per data source; every sample of the series shares it. */
+    private Metric toMetric(AbstractDS ds, ResourcePath resourcePath, String group, Properties props) {
+        final String type = ds.isCounter() ? "count" : "gauge";
+        final ImmutableMetric.MetricBuilder metric = ImmutableMetric.builder()
                     .intrinsicTag(IntrinsicTagNames.resourceId, resourcePath.toString() + "/" + group)
                     .intrinsicTag(IntrinsicTagNames.name, ds.getName())
                     .metaTag("mtype", type);
@@ -346,11 +352,7 @@ public class ImportFromRRD implements Action {
                 metric.externalTag(k, props.getProperty(k));
             }
         }
-        return ImmutableSample.builder()
-                .time(timestamp)
-                .value(value)
-                .metric(metric.build())
-                .build();
+        return metric.build();
     }
 
     private void injectSamples(final ResourcePath resourcePath,
@@ -358,6 +360,12 @@ public class ImportFromRRD implements Action {
                                       final List<? extends AbstractDS> dataSources,
                                       final SortedMap<Long, List<Double>> samples,
                                       final Properties props) throws StorageException {
+
+        // One metric per data source, not one per sample: building a metric computes its key and copies its tags.
+        final List<Metric> metrics = new ArrayList<>(dataSources.size());
+        for (final AbstractDS ds : dataSources) {
+            metrics.add(toMetric(ds, resourcePath, group, props));
+        }
 
         // Transform the RRD samples into OPA Samples
         List<Sample> batch = new ArrayList<>(this.batchSize);
@@ -367,11 +375,10 @@ public class ImportFromRRD implements Action {
                 if (Double.isNaN(value)) {
                     continue;
                 }
-                final AbstractDS ds = dataSources.get(i);
                 final Instant timestamp = Instant.ofEpochSecond(s.getKey());
 
                 try {
-                    batch.add(toSample(ds, resourcePath, group, timestamp, value, props));
+                    batch.add(ImmutableSample.builder().metric(metrics.get(i)).time(timestamp).value(value).build());
                 } catch (IllegalArgumentException e) {
                     // This can happen when the value is outside of the range for the expected
                     // type i.e. negative for a counter, so we silently skip these
