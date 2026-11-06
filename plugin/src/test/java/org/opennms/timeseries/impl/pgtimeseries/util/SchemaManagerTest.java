@@ -123,6 +123,23 @@ public class SchemaManagerTest {
     }
 
     @Test
+    public void addsTheTagLookupIndexToASchemaThatPredatesIt() throws SQLException {
+        final String count = "SELECT count(*) FROM pg_indexes WHERE schemaname = 'public' AND indexname = '"
+                + SchemaManager.TAG_LOOKUP_INDEX + "'";
+        manager(PGTimeseriesConfig.builder().build());
+        SchemaManager.createSchema(CLOCK);
+        assertEquals(1, scalarInt(count));
+
+        // a database set up by 0.2.x has the tables but not this index
+        try (Connection c = dataSource.getConnection(); Statement st = c.createStatement()) {
+            st.execute("DROP INDEX " + SchemaManager.TAG_LOOKUP_INDEX);
+        }
+        assertEquals(0, scalarInt(count));
+        SchemaManager.createSchema(CLOCK);
+        assertEquals(1, scalarInt(count));
+    }
+
+    @Test
     public void everythingIsOwnedByTheApplicationRole() throws SQLException {
         manager(PGTimeseriesConfig.builder().build());
         SchemaManager.createSchema(CLOCK);

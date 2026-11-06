@@ -56,6 +56,7 @@ See [Upgrading from 0.2.x](#upgrading-from-02x) if you have such a database.
    *  **``connectionPoolSize``**: If ``externalDatasourceURL`` is defined, a connection pool is created for this data source. This limits the total number of pooled connections to the target PostgreSQL database. Default: ``10``
    *  **``flushMaxSamples``**: Samples are buffered across collection sets and flushed once this many are pending. Default: ``1000``
    *  **``flushMaxIntervalMs``**: Upper bound, in milliseconds, on how long a buffered sample waits before being flushed, regardless of ``flushMaxSamples``. Default: ``5000``
+   *  **``maxBufferedSamples``**: Most samples held in the write-behind buffer. When the database is down or cannot keep up, a collection set that does not fit is refused (OpenNMS counts it as dropped) instead of growing the heap without bound. ``0`` disables the limit. Default: ``100000``
 
 The partition policy (``partitionDuration``, ``partitionLeadTime``, ``retentionPolicy``,
 ``compressionPolicy``) is copied from the configuration file into the ``pgtimeseries_config``
@@ -121,6 +122,11 @@ database as is:
 opennms-pgtimeseries:migrate-from-extension --dry-run
 opennms-pgtimeseries:migrate-from-extension --drop-orphans
 ```
+
+On its first start against a 0.2.x database the plugin also adds an index on ``pgtimeseries_tag (key, value)``,
+which the old schema lacked, so looking metrics up by tag (resource graphs, the resource browser) no longer
+scans the whole tag table. A role that may not create it gets a warning; run
+``CREATE INDEX pgtimeseries_tag_key_value_idx ON pgtimeseries_tag (key, value)`` as the table's owner.
 
 The command unschedules the extension's two pg_cron jobs, removes the table's pg_partman
 configuration and template table, and drops the ``timeseries`` extension. Dropping the extension

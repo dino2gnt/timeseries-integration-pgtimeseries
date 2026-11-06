@@ -32,3 +32,6 @@ bin/
 assembly/kar/target/
 karaf-features/target/
 plugin/target/
+
+### IntelliJ module files
+*.iml

@@ -31,7 +31,7 @@
         <slf4j-api.version>1.7.36</slf4j-api.version>
 	    <istack.commons.version>4.2.0</istack.commons.version>
         <metrics.version>4.2.37</metrics.version>
-        <hikari-cp.version>3.4.5</hikari-cp.version>
+        <hikari-cp.version>5.1.0</hikari-cp.version>
         <jrobin.version>1.6.0</jrobin.version>
     </properties>
 
@@ -127,13 +127,6 @@
                 <version>${log4j.version}</version>
                 <scope>test</scope>
             </dependency>
-            <dependency>
-                <groupId>org.testcontainers</groupId>
-                <artifactId>testcontainers</artifactId>
-                <version>1.14.3</version>
-                <scope>test</scope>
-            </dependency>
-
         </dependencies>
     </dependencyManagement>
 

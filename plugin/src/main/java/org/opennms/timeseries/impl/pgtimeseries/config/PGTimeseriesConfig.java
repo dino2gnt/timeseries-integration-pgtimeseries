@@ -15,6 +15,7 @@ public class PGTimeseriesConfig {
     private final int connectionPoolSize;
     private final int flushMaxSamples;
     private final long flushMaxIntervalMs;
+    private final int maxBufferedSamples;
     private final String partitionLeadTime;
     private final long maintenanceIntervalMinutes;
     private final boolean managePartitions;
@@ -35,6 +36,7 @@ public class PGTimeseriesConfig {
         this.connectionPoolSize = builder.connectionPoolSize;
         this.flushMaxSamples = builder.flushMaxSamples;
         this.flushMaxIntervalMs = builder.flushMaxIntervalMs;
+        this.maxBufferedSamples = builder.maxBufferedSamples;
         this.partitionLeadTime = builder.partitionLeadTime;
         this.maintenanceIntervalMinutes = builder.maintenanceIntervalMinutes;
         this.managePartitions = builder.managePartitions;
@@ -55,7 +57,8 @@ public class PGTimeseriesConfig {
             final long flushMaxIntervalMs,
             final String partitionLeadTime,
             final long maintenanceIntervalMinutes,
-            final boolean managePartitions) {
+            final boolean managePartitions,
+            final int maxBufferedSamples) {
         this(builder()
                 .externalDatasourceURL(externalDatasourceURL)
                 .adminDatasourceURL(adminDatasourceURL)
@@ -70,7 +73,8 @@ public class PGTimeseriesConfig {
                 .flushMaxIntervalMs(flushMaxIntervalMs)
                 .partitionLeadTime(partitionLeadTime)
                 .maintenanceIntervalMinutes(maintenanceIntervalMinutes)
-                .managePartitions(managePartitions));
+                .managePartitions(managePartitions)
+                .maxBufferedSamples(maxBufferedSamples));
     }
 
     public String getExternalDatasourceURL() {
@@ -120,6 +124,15 @@ public class PGTimeseriesConfig {
     }
 
     /**
+     * Most samples the write-behind buffer holds. A {@code store()} that would exceed it is rejected (and its samples
+     * counted as lost) so a database that is down or slow cannot make OpenNMS run out of memory. Zero or negative
+     * disables the bound.
+     */
+    public int getMaxBufferedSamples() {
+        return maxBufferedSamples;
+    }
+
+    /**
      * How far ahead of "now" partitions are kept pre-created, as a PostgreSQL interval. Mirrors the
      * {@code partition_lead_time} that pg_timeseries used to apply (default {@code 1 month}).
      */
@@ -153,9 +166,10 @@ public class PGTimeseriesConfig {
         private String backfillStart = null;
         private boolean createTablesOnInstall = true;
         private int maxBatchSize = 100;
-        private int connectionPoolSize = 100;
+        private int connectionPoolSize = 10;
         private int flushMaxSamples = 1000;
         private long flushMaxIntervalMs = 5000;
+        private int maxBufferedSamples = 100_000;
         private String partitionLeadTime = "1 month";
         private long maintenanceIntervalMinutes = 60;
         private boolean managePartitions = true;
@@ -215,6 +229,11 @@ public class PGTimeseriesConfig {
             return this;
         }
 
+        public Builder maxBufferedSamples(final int maxBufferedSamples) {
+            this.maxBufferedSamples = maxBufferedSamples;
+            return this;
+        }
+
         public Builder partitionLeadTime(final String partitionLeadTime) {
             this.partitionLeadTime = partitionLeadTime;
             return this;
@@ -249,6 +268,7 @@ public class PGTimeseriesConfig {
                 .add("connectionPoolSize='" + connectionPoolSize + "'" )
                 .add("flushMaxSamples='" + flushMaxSamples + "'")
                 .add("flushMaxIntervalMs='" + flushMaxIntervalMs + "'")
+                .add("maxBufferedSamples='" + maxBufferedSamples + "'")
                 .add("partitionLeadTime='" + partitionLeadTime + "'")
                 .add("maintenanceIntervalMinutes='" + maintenanceIntervalMinutes + "'")
                 .add("managePartitions=" + managePartitions)

@@ -27,6 +27,7 @@
             <cm:property name="partitionLeadTime" value = "1 month" />
             <cm:property name="maintenanceIntervalMinutes" value = "60" />
             <cm:property name="managePartitions" value = "true" />
+            <cm:property name="maxBufferedSamples" value = "100000" />
         </cm:default-properties>
     </cm:property-placeholder>
 
@@ -45,6 +46,7 @@
         <argument value="${partitionLeadTime}" />
         <argument value="${maintenanceIntervalMinutes}" />
         <argument value="${managePartitions}" />
+        <argument value="${maxBufferedSamples}" />
     </bean>
 
     <reference id="dataSource" interface="javax.sql.DataSource" availability="mandatory" />

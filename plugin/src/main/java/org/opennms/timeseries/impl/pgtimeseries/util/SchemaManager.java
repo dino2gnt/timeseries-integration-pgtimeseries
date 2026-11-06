@@ -22,13 +22,16 @@ import lombok.extern.slf4j.Slf4j;
  *
  * <p>The schema is the same one the 0.2.x plugin had pg_timeseries set up (three tables, the same indexes, the
  * same default partition and partition naming), plus one small policy table that replaces the extension's
- * {@code ts_config}. Every statement is idempotent so this can run at every start-up and on top of a database
+ * {@code ts_config} and a lookup index on the tag table that the old versions lacked. Every statement is idempotent so this can run at every start-up and on top of a database
  * that was set up by an earlier version.</p>
  *
  * <p>Datasource selection (local vs. external) lives in {@link PGTimeseriesDatabaseHelpers}.</p>
  */
 @Slf4j
 public class SchemaManager {
+
+    /** Index on {@code pgtimeseries_tag (key, value)}; added in 0.3.0 for {@code findMetrics}. */
+    public static final String TAG_LOOKUP_INDEX = "pgtimeseries_tag_key_value_idx";
 
     public SchemaManager(final DataSource dataSource, final PGTimeseriesConfig config) {
         PGTimeseriesDatabaseHelpers.configure(dataSource, config);
@@ -165,6 +168,11 @@ public class SchemaManager {
                 // Tag table. Lookups by keyid use the leading column of the UNIQUE constraint's index.
                 createIfMissing(conn, stmt, TableNames.PGTIMESERIES_TAG, "CREATE TABLE " + TableNames.PGTIMESERIES_TAG
                         + "(keyid bigint, key TEXT, value TEXT NOT NULL, type TEXT NOT NULL, UNIQUE (keyid, key, value, type))");
+                // findMetrics looks tags up by key and value. The UNIQUE index above leads with keyid, so without this
+                // one every resource lookup scanned the whole tag table. Missing on 0.2.x databases, hence added on
+                // start-up; a role that may not create it gets a warning and the statement to run, not a failed start.
+                createIfMissingOrWarn(conn, stmt, TAG_LOOKUP_INDEX,
+                        "CREATE INDEX " + TAG_LOOKUP_INDEX + " ON " + TableNames.PGTIMESERIES_TAG + "(key, value)");
                 // Indexes on the parent propagate to every existing and future partition.
                 // The fetch path always filters "WHERE keyid = ? AND time > ? AND time < ?".
                 createIfMissing(conn, stmt, "pgtimeseries_time_series_keyid_time_idx",
@@ -213,6 +221,17 @@ public class SchemaManager {
             log.info("Partition bootstrap: {}", report.summary());
         }
         return report;
+    }
+
+    /** Like {@link #createIfMissing} for an object the plugin works without: a failure is logged, not thrown. */
+    private static void createIfMissingOrWarn(final Connection conn, final Statement stmt, final String relation, final String ddl)
+            throws SQLException {
+        try {
+            createIfMissing(conn, stmt, relation, ddl);
+        } catch (SQLException e) {
+            log.warn("Could not create {} ({}). The plugin works without it but metric lookups are slower; "
+                    + "run this as the owner of the table: {}", relation, e.getMessage().trim(), ddl);
+        }
     }
 
     /** Runs {@code ddl} only when no relation named {@code relation} is visible; avoids DDL (and its privilege checks) otherwise. */

@@ -27,7 +27,13 @@
  *******************************************************************************/
 package org.opennms.timeseries.impl.pgtimeseries.util.rrd;
 
-import java.io.*;
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 
 import javax.xml.bind.JAXBContext;
 import javax.xml.bind.JAXBException;
@@ -53,10 +59,44 @@ public class RrdConvertUtils {
 
     private static final Logger LOG = LoggerFactory.getLogger(RrdConvertUtils.class);
 
+    /** How much of rrdtool's stderr is kept for an error message. */
+    private static final int STDERR_LIMIT = 4000;
+
+    // JAXBContext creation is expensive (it introspects the whole class graph) and the context is thread safe,
+    // so one per schema is shared by every import thread. Unmarshallers are not thread safe: one per call.
+    private static volatile JAXBContext rrdV1Context;
+    private static volatile JAXBContext rrdV3Context;
+
     /**
      * Instantiates a new RRDtool Convert Utils.
      */
     private RrdConvertUtils() {}
+
+    private static JAXBContext v1Context() throws JAXBException {
+        JAXBContext c = rrdV1Context;
+        if (c == null) {
+            synchronized (RrdConvertUtils.class) {
+                c = rrdV1Context;
+                if (c == null) {
+                    rrdV1Context = c = JAXBContext.newInstance(RRDv1.class);
+                }
+            }
+        }
+        return c;
+    }
+
+    private static JAXBContext v3Context() throws JAXBException {
+        JAXBContext c = rrdV3Context;
+        if (c == null) {
+            synchronized (RrdConvertUtils.class) {
+                c = rrdV3Context;
+                if (c == null) {
+                    rrdV3Context = c = JAXBContext.newInstance(RRDv3.class);
+                }
+            }
+        }
+        return c;
+    }
 
     /**
      * Dumps a JRB.
@@ -67,13 +107,13 @@ public class RrdConvertUtils {
      * @throws RrdException the RRD exception
      */
     public static RRDv1 dumpJrb(File sourceFile) throws IOException, RrdException, JAXBException {
-        RrdDb jrb = new RrdDb(sourceFile, true);
-        JAXBContext jc = JAXBContext.newInstance(RRDv1.class);
-        Unmarshaller jaxbUnmarshaller = jc.createUnmarshaller();
-        StringReader reader = new StringReader(jrb.getXml());
-        RRDv1 rrd = (RRDv1) jaxbUnmarshaller.unmarshal(reader);
-        jrb.close();
-        return rrd;
+        final RrdDb jrb = new RrdDb(sourceFile, true);
+        try {
+            final Unmarshaller jaxbUnmarshaller = v1Context().createUnmarshaller();
+            return (RRDv1) jaxbUnmarshaller.unmarshal(new StringReader(jrb.getXml()));
+        } finally {
+            jrb.close();
+        }
     }
 
     /**
@@ -85,20 +125,76 @@ public class RrdConvertUtils {
      * @throws RrdException the RRD exception
      */
     public static RRDv3 dumpRrd(File sourceFile) throws IOException, RrdException {
-        String rrdBinary = System.getProperty("rrd.binary");
+        final String rrdBinary = System.getProperty("rrd.binary");
         if (rrdBinary == null) {
             throw new IllegalArgumentException("rrd.binary property must be set");
         }
+        final Process process = new ProcessBuilder(rrdBinary, "dump", sourceFile.getAbsolutePath()).start();
+        // stderr must be drained concurrently: an rrdtool that fills the pipe while we are still reading stdout
+        // would block forever, and so would we.
+        final StderrDrain stderr = new StderrDrain(process.getErrorStream());
+        stderr.start();
         try {
-            XMLReader xmlReader = XMLReaderFactory.createXMLReader();
+            final XMLReader xmlReader = XMLReaderFactory.createXMLReader();
             xmlReader.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd", false);
-            Process process = Runtime.getRuntime().exec(new String[] {rrdBinary, "dump", sourceFile.getAbsolutePath()});
-            SAXSource source = new SAXSource(xmlReader, new InputSource(new InputStreamReader(process.getInputStream())));
-            JAXBContext jc = JAXBContext.newInstance(RRDv3.class);
-            Unmarshaller u = jc.createUnmarshaller();
-            return (RRDv3) u.unmarshal(source);
+            final SAXSource source = new SAXSource(xmlReader,
+                    new InputSource(new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8)));
+            final RRDv3 rrd = (RRDv3) v3Context().createUnmarshaller().unmarshal(source);
+            final int exit = process.waitFor();
+            if (exit != 0) {
+                throw new RrdException("rrdtool dump of " + sourceFile + " exited with status " + exit + stderr.suffix());
+            }
+            return rrd;
+        } catch (RrdException e) {
+            throw e;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new RrdException("Interrupted while dumping " + sourceFile, e);
         } catch (Exception e) {
-            throw new RrdException("Can't parse RRD Dump", e);
+            throw new RrdException("Can't parse the RRD dump of " + sourceFile + stderr.suffix(), e);
+        } finally {
+            process.destroy(); // no-op once it has exited; kills a dump we gave up on
+        }
+    }
+
+    /** Reads a process's stderr to the end, keeping the first {@link #STDERR_LIMIT} characters for diagnostics. */
+    private static final class StderrDrain extends Thread {
+        private final InputStream in;
+        private final StringBuilder text = new StringBuilder();
+
+        StderrDrain(final InputStream in) {
+            super("rrdtool-stderr");
+            this.in = in;
+            setDaemon(true);
+        }
+
+        @Override
+        public void run() {
+            try (BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) {
+                    synchronized (text) {
+                        if (text.length() < STDERR_LIMIT) {
+                            text.append(line).append('\n');
+                        }
+                    }
+                }
+            } catch (IOException e) {
+                LOG.debug("rrdtool stderr closed", e);
+            }
+        }
+
+        /** The captured stderr formatted for appending to a message, or an empty string if there was none. */
+        String suffix() {
+            try {
+                join(2_000);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            synchronized (text) {
+                final String s = text.toString().trim();
+                return s.isEmpty() ? "" : " (rrdtool said: " + s + ")";
+            }
         }
     }
 }

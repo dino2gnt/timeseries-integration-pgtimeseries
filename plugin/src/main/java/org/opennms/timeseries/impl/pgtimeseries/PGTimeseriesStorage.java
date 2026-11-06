@@ -8,10 +8,11 @@ import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.OffsetDateTime;
+import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -19,6 +20,7 @@ import java.util.Objects;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Executors;
@@ -51,6 +53,7 @@ import org.opennms.timeseries.impl.pgtimeseries.util.TableNames;
 import org.slf4j.Logger;
 
 import com.codahale.metrics.jmx.JmxReporter;
+import com.codahale.metrics.Gauge;
 import com.codahale.metrics.Meter;
 import com.codahale.metrics.MetricRegistry;
 
@@ -66,15 +69,20 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
     /** SQLSTATE check_violation; PostgreSQL raises it when no partition accepts a row's partition key. */
     private static final String SQLSTATE_NO_PARTITION_FOR_ROW = "23514";
 
+    /** At most one "buffer full" warning per this many nanoseconds; the meters carry the exact counts. */
+    private static final long BUFFER_FULL_WARN_INTERVAL_NANOS = TimeUnit.MINUTES.toNanos(1);
+
     private final DataSource dataSource;
     private final PGTimeseriesConfig config;
-    public final Map<String, Integer> MetricCache = new HashMap<String, Integer>();
+    /** Metric key to keyid. Written by the flush thread and read by every OpenNMS reader thread, hence concurrent. */
+    private final Map<String, Integer> metricCache = new ConcurrentHashMap<>();
 
     // Write-behind buffer. Samples accumulate across store() calls and are flushed when either
     // the buffered count reaches flushMaxSamples or flushMaxIntervalMs elapses, whichever comes first.
     private final Queue<Sample> buffer = new ConcurrentLinkedQueue<>();
     private final AtomicInteger bufferedCount = new AtomicInteger(0);
     private volatile ScheduledExecutorService flushExecutor;
+    private volatile long lastBufferFullWarning = Long.MIN_VALUE;
 
     // Partition maintenance (create ahead, retention, compression) on its own thread; null when disabled.
     private volatile MaintenanceService maintenance;
@@ -83,8 +91,10 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
     private final Meter samplesWritten = metrics.meter("samplesWritten");
     private final Meter samplesRead = metrics.meter("samplesRead");
     private final Meter samplesLost = metrics.meter("samplesLost");
+    /** Samples refused by {@link #store} because the buffer was full; also counted in {@code samplesLost}. */
+    private final Meter samplesRejected = metrics.meter("samplesRejected");
     private final Meter samplesBuffered = metrics.meter("samplesBuffered");
-    private final Meter cacheSize = metrics.meter("metricCacheSize");
+    private final Gauge<Integer> cacheSize = metrics.register("metricCacheSize", (Gauge<Integer>) metricCache::size);
     private final Meter cacheHit = metrics.meter("metricCacheHit");
     private final Meter cacheMiss = metrics.meter("metricCacheMiss");
     final JmxReporter reporter = JmxReporter.forRegistry(metrics).inDomain("org.opennms.timeseries.impl.pgtimeseries").build();
@@ -103,11 +113,29 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
      * either when it reaches {@code flushMaxSamples} or by the periodic flusher (bounded by
      * {@code flushMaxIntervalMs}), so a single flush may span many {@code store()} invocations
      * (i.e. many collection sets).
+     *
+     * <p>The buffer is bounded by {@code maxBufferedSamples}: when the database is down or cannot keep up, a batch
+     * that does not fit is refused with a {@link StorageException} (OpenNMS counts it as dropped and carries on)
+     * instead of growing the heap until OpenNMS falls over.</p>
      */
     @Override
     public void store(List<Sample> entries) throws StorageException {
         if (entries == null || entries.isEmpty()) {
             return;
+        }
+        final int max = config.getMaxBufferedSamples();
+        if (max > 0 && bufferedCount.get() + entries.size() > max) {
+            samplesRejected.mark(entries.size());
+            samplesLost.mark(entries.size());
+            triggerFlush();
+            final long now = System.nanoTime();
+            if (now - lastBufferFullWarning > BUFFER_FULL_WARN_INTERVAL_NANOS) {
+                lastBufferFullWarning = now;
+                RATE_LIMITED_LOGGER.warn("The write-behind buffer is full ({} samples, maxBufferedSamples) and the database "
+                        + "is not draining it; rejecting {} samples. Is the database reachable and keeping up?", max, entries.size());
+            }
+            throw new StorageException("The write-behind buffer is full (" + max + " samples); " + entries.size()
+                    + " samples were rejected because the database is not draining it");
         }
         buffer.addAll(entries);
         samplesBuffered.mark(entries.size());
@@ -264,7 +292,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             int written = 0;
             for (final Sample sample : samples) {
                 final String key = sample.getMetric().getKey();
-                Integer keyid = MetricCache.get(key);
+                Integer keyid = metricCache.get(key);
                 if (keyid != null) {
                     cacheHit.mark();
                 } else {
@@ -275,9 +303,8 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                         samplesLost.mark();
                         continue;
                     }
-                    MetricCache.put(key, keyid);
+                    metricCache.put(key, keyid);
                     cachedThisAttempt.add(key);
-                    cacheSize.mark();
                 }
                 sps.setTimestamp(1, new Timestamp(sample.getTime().toEpochMilli()));
                 sps.setInt(2, keyid);
@@ -300,7 +327,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             }
         } catch (SQLException e) {
             for (final String key : cachedThisAttempt) {
-                MetricCache.remove(key);
+                metricCache.remove(key);
             }
             if (connection != null) {
                 try {
@@ -512,16 +539,20 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
     }
 
     // Counter / gauge fetch templates. Raw rows are assigned to a bucket once via date_bin() (PG14+) and the
-    // result is equi-joined to a generate_series() of bucket starts (RIGHT/LEFT join fills empty buckets with NaN).
+    // result is equi-joined to a generate_series() of bucket starts (LEFT join fills empty buckets with NaN).
     // This replaces the previous interval range-join, which scanned buckets x samples.
+    //
+    // Every value is a bind parameter (see FetchQuery for the order). Timestamps travel as timestamptz with their
+    // UTC offset, so the JDBC session's time zone, and the hour that repeats when daylight saving time ends, cannot
+    // move the window. The only spliced-in text is the aggregate function name, from a fixed set.
     private static final String COUNTER_SQL =
             "WITH buckets AS ( " +
-                "SELECT n AS start_time FROM generate_series('%s', '%s', '%s seconds'::interval) AS n " +
+                "SELECT n AS start_time FROM generate_series(?::timestamptz, ?::timestamptz, ? * interval '1 second') AS n " +
             "), deltas AS ( " +
-                "SELECT date_bin('%s seconds'::interval, time, '%s') AS bucket, " +
+                "SELECT date_bin(? * interval '1 second', time, ?::timestamptz) AS bucket, " +
                        "value - lag(value) OVER (ORDER BY time) AS delta " +
                 "FROM pgtimeseries_time_series " +
-                "WHERE keyid = ? AND time > '%s' AND time < '%s' " +
+                "WHERE keyid = ? AND time > ?::timestamptz AND time < ?::timestamptz " +
             "), binned AS ( " +
                 // RRDtool-style counter-wrap correction: a negative delta means the counter overflowed.
                 // First add 2^32 (assume a 32-bit counter); if it is still negative it must have been a
@@ -537,17 +568,17 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                        "END AS deltaval " +
                 "FROM deltas " +
             ") " +
-            "SELECT b.start_time AS step, COALESCE(%s(d.deltaval) / %s, 'NaN') AS aggregation " +
+            "SELECT b.start_time AS step, COALESCE(%s(d.deltaval) / ?::double precision, 'NaN') AS aggregation " +
             "FROM buckets b LEFT JOIN binned d ON d.bucket = b.start_time " +
             "GROUP BY b.start_time ORDER BY b.start_time";
 
     private static final String GAUGE_AGGR_SQL =
             "WITH buckets AS ( " +
-                "SELECT n AS start_time FROM generate_series('%s', '%s', '%s seconds'::interval) AS n " +
+                "SELECT n AS start_time FROM generate_series(?::timestamptz, ?::timestamptz, ? * interval '1 second') AS n " +
             "), binned AS ( " +
-                "SELECT date_bin('%s seconds'::interval, time, '%s') AS bucket, value AS raw_value " +
+                "SELECT date_bin(? * interval '1 second', time, ?::timestamptz) AS bucket, value AS raw_value " +
                 "FROM pgtimeseries_time_series " +
-                "WHERE keyid = ? AND time > '%s' AND time < '%s' " +
+                "WHERE keyid = ? AND time > ?::timestamptz AND time < ?::timestamptz " +
             ") " +
             "SELECT b.start_time AS step, COALESCE(%s(d.raw_value), 'NaN') AS aggregation " +
             "FROM buckets b LEFT JOIN binned d ON d.bucket = b.start_time " +
@@ -555,11 +586,11 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
 
     private static final String GAUGE_NONE_SQL =
             "WITH buckets AS ( " +
-                "SELECT n AS start_time FROM generate_series('%s', '%s', '%s seconds'::interval) AS n " +
+                "SELECT n AS start_time FROM generate_series(?::timestamptz, ?::timestamptz, ? * interval '1 second') AS n " +
             "), binned AS ( " +
-                "SELECT date_bin('%s seconds'::interval, time, '%s') AS bucket, value AS raw_value, time " +
+                "SELECT date_bin(? * interval '1 second', time, ?::timestamptz) AS bucket, value AS raw_value, time " +
                 "FROM pgtimeseries_time_series " +
-                "WHERE keyid = ? AND time > '%s' AND time < '%s' " +
+                "WHERE keyid = ? AND time > ?::timestamptz AND time < ?::timestamptz " +
             "), latest AS ( " +
                 "SELECT DISTINCT ON (bucket) bucket, raw_value FROM binned ORDER BY bucket, time DESC " +
             ") " +
@@ -567,22 +598,38 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             "FROM buckets b LEFT JOIN latest d ON d.bucket = b.start_time " +
             "ORDER BY b.start_time";
 
+    /** A fetch statement and its bind values in placeholder order. */
+    record FetchQuery(String sql, List<Object> params) {
+        void bind(final PreparedStatement ps) throws SQLException {
+            for (int i = 0; i < params.size(); i++) {
+                ps.setObject(i + 1, params.get(i));
+            }
+        }
+    }
+
     /**
-     * Builds the fetch SQL for a metric. Counters are returned as a rate (delta over the bucket divided by the
-     * step); gauges return either the latest raw value per bucket (aggregation NONE) or the aggregate. The single
-     * bind parameter ({@code ?}) is the keyid. Extracted from {@link #getTimeseries} so it can be unit-tested
-     * without a database. A non-positive step is coerced to 1 second, since generate_series/date_bin require a
-     * positive stride.
+     * Builds the fetch query for a metric. Counters are returned as a rate (delta over the bucket divided by the
+     * step); gauges return either the latest raw value per bucket (aggregation NONE) or the aggregate. Extracted
+     * from {@link #getTimeseries} so it can be unit-tested without a database. A non-positive step is coerced to
+     * 1 second, since generate_series/date_bin require a positive stride.
+     *
+     * <p>Parameter order, shared by all three templates: series start, series end, step, step, bin origin
+     * (= start), keyid, window start, window end; counters add the step once more as the rate divisor.</p>
      */
-    String buildFetchSql(final String mtype, final Aggregation aggregation, final Timestamp start, final Timestamp end, final long step) {
+    FetchQuery buildFetchQuery(final String mtype, final Aggregation aggregation, final Instant start, final Instant end,
+                               final long step, final int keyid) {
         final long stepInSeconds = step <= 0 ? 1 : step;
+        final OffsetDateTime from = start.atOffset(ZoneOffset.UTC);
+        final OffsetDateTime to = end.atOffset(ZoneOffset.UTC);
+        final List<Object> params = new ArrayList<>(List.of(from, to, stepInSeconds, stepInSeconds, from, keyid, from, to));
         if (Metric.Mtype.count.name().equals(mtype) || Metric.Mtype.counter.name().equals(mtype)) {
             final String aggr = (Aggregation.NONE == aggregation) ? "sum" : toSql(aggregation);
-            return String.format(COUNTER_SQL, start, end, stepInSeconds, stepInSeconds, start, start, end, aggr, stepInSeconds);
+            params.add(stepInSeconds);
+            return new FetchQuery(String.format(COUNTER_SQL, aggr), params);
         } else if (Aggregation.NONE == aggregation) {
-            return String.format(GAUGE_NONE_SQL, start, end, stepInSeconds, stepInSeconds, start, start, end);
+            return new FetchQuery(GAUGE_NONE_SQL, params);
         } else {
-            return String.format(GAUGE_AGGR_SQL, start, end, stepInSeconds, stepInSeconds, start, start, end, toSql(aggregation));
+            return new FetchQuery(String.format(GAUGE_AGGR_SQL, toSql(aggregation)), params);
         }
     }
 
@@ -597,14 +644,17 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             db.watch(connection);
 
             final String key = request.getMetric().getKey();
-            Integer keyid = MetricCache.get(key);
+            Integer keyid = metricCache.get(key);
             if (keyid != null) {
                 cacheHit.mark();
             } else {
-                keyid = getMetricID(connection, key);
                 cacheMiss.mark();
-                MetricCache.put(key, keyid);
-                cacheSize.mark();
+                keyid = getMetricID(connection, key);
+                if (keyid == null) {
+                    // unknown metric: nothing to read, and nothing to cache (a later store() creates it)
+                    return Collections.emptyList();
+                }
+                metricCache.put(key, keyid);
             }
 
             final List<Metric> metrics = loadMetrics(connection, db, Collections.singletonList(keyid));
@@ -613,14 +663,14 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                 return Collections.emptyList();
             }
             final Metric metric = metrics.get(0);
-            final Timestamp start = new Timestamp(request.getStart().toEpochMilli());
-            final Timestamp end = new Timestamp(request.getEnd().toEpochMilli());
-            final String type = metric.getFirstTagByKey(MetaTagNames.mtype).getValue();
-            final String sql = buildFetchSql(type, request.getAggregation(), start, end, request.getStep().getSeconds());
+            final Tag mtype = metric.getFirstTagByKey(MetaTagNames.mtype);
+            final String type = mtype == null ? Metric.Mtype.gauge.name() : mtype.getValue();
+            final FetchQuery query = buildFetchQuery(type, request.getAggregation(), request.getStart(), request.getEnd(),
+                    request.getStep().getSeconds(), keyid);
 
-            final PreparedStatement statement = connection.prepareStatement(sql);
+            final PreparedStatement statement = connection.prepareStatement(query.sql());
             db.watch(statement);
-            statement.setInt(1, keyid);
+            query.bind(statement);
             final ResultSet rs = statement.executeQuery();
             db.watch(rs);
 
@@ -654,7 +704,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             connection = openConnection();
             db.watch(connection);
 
-            Integer keyid = MetricCache.get(metric.getKey());
+            Integer keyid = metricCache.get(metric.getKey());
             if (keyid == null) {
                 keyid = getMetricID(connection, metric.getKey());
             }
@@ -663,30 +713,38 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                 return;
             }
 
-            PreparedStatement statement = connection.prepareStatement("DELETE FROM pgtimeseries_time_series WHERE keyid = ?");
-            db.watch(statement);
-            statement.setInt(1, keyid);
-            final int deletedTimeseriesEntries = statement.executeUpdate();
-
-            statement = connection.prepareStatement("DELETE FROM pgtimeseries_tag WHERE keyid = ?");
-            db.watch(statement);
-            statement.setInt(1, keyid);
-            final int deletedTimeseriesTags = statement.executeUpdate();
-
-            statement = connection.prepareStatement("DELETE FROM pgtimeseries_metric WHERE keyid = ?");
-            db.watch(statement);
-            statement.setInt(1, keyid);
-            statement.executeUpdate();
-
-            MetricCache.remove(metric.getKey());
-            log.debug("Deleted {} timeseries entries and {} timeseries tags for metric {}",
-                    deletedTimeseriesEntries, deletedTimeseriesTags, metric);
+            // One transaction: a failure part way through must not leave a metric without its samples or tags.
+            connection.setAutoCommit(false);
+            try {
+                final int deletedTimeseriesEntries = deleteByKeyid(connection, db, TableNames.PGTIMESERIES_TIME_SERIES, keyid);
+                final int deletedTimeseriesTags = deleteByKeyid(connection, db, TableNames.PGTIMESERIES_TAG, keyid);
+                deleteByKeyid(connection, db, TableNames.PGTIMESERIES_METRIC, keyid);
+                connection.commit();
+                log.debug("Deleted {} timeseries entries and {} timeseries tags for metric {}",
+                        deletedTimeseriesEntries, deletedTimeseriesTags, metric);
+            } catch (SQLException e) {
+                try {
+                    connection.rollback();
+                } catch (SQLException re) {
+                    log.warn("Rollback failed after a failed delete.", re);
+                }
+                throw e;
+            }
+            metricCache.remove(metric.getKey());
         } catch (SQLException e) {
             log.error("Could not delete metric {}", metric, e);
             throw new StorageException(e);
         } finally {
             db.cleanUp();
         }
+    }
+
+    private static int deleteByKeyid(final Connection connection, final DBUtils db, final String table, final int keyid)
+            throws SQLException {
+        final PreparedStatement statement = connection.prepareStatement("DELETE FROM " + table + " WHERE keyid = ?");
+        db.watch(statement);
+        statement.setInt(1, keyid);
+        return statement.executeUpdate();
     }
 
     private String toSql(final Aggregation aggregation) {
@@ -774,7 +832,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             this.maintenance = null;
         }
         reporter.stop();
-        PGTimeseriesDatabaseHelpers.ExtReporter.stop(); // janky
+        PGTimeseriesDatabaseHelpers.shutdown();
     }
 
     public MetricRegistry getMetrics() {

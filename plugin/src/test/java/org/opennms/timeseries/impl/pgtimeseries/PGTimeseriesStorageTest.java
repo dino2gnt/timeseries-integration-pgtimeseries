@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Set;
+import java.util.TimeZone;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -31,6 +32,7 @@ import org.opennms.integration.api.v1.timeseries.IntrinsicTagNames;
 import org.opennms.integration.api.v1.timeseries.MetaTagNames;
 import org.opennms.integration.api.v1.timeseries.Metric;
 import org.opennms.integration.api.v1.timeseries.Sample;
+import org.opennms.integration.api.v1.timeseries.StorageException;
 import org.opennms.integration.api.v1.timeseries.TagMatcher;
 import org.opennms.integration.api.v1.timeseries.TimeSeriesFetchRequest;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableMetric;
@@ -39,6 +41,7 @@ import org.opennms.integration.api.v1.timeseries.immutables.ImmutableTagMatcher;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableTimeSeriesFetchRequest;
 import org.opennms.timeseries.impl.pgtimeseries.config.PGTimeseriesConfig;
 import org.opennms.timeseries.impl.pgtimeseries.util.ContainerizedDatabase;
+import org.opennms.timeseries.impl.pgtimeseries.util.PGTimeseriesDatabaseHelpers;
 
 import com.zaxxer.hikari.HikariConfig;
 import com.zaxxer.hikari.HikariDataSource;
@@ -62,6 +65,7 @@ public class PGTimeseriesStorageTest {
 
     private static ContainerizedDatabase database;
     private static DataSource dataSource;
+    private static PGTimeseriesConfig config;
     private static PGTimeseriesStorage storage;
 
     private Instant t0;
@@ -82,7 +86,7 @@ public class PGTimeseriesStorageTest {
 
         // High flush thresholds so buffering is deterministic: nothing auto-flushes during the test, leaving
         // flushes under the control of flush()/read-triggered flushPending().
-        PGTimeseriesConfig config = PGTimeseriesConfig.builder()
+        config = PGTimeseriesConfig.builder()
                 .flushMaxSamples(1_000_000)
                 .flushMaxIntervalMs(3_600_000L)
                 .build();
@@ -113,11 +117,13 @@ public class PGTimeseriesStorageTest {
         storage.flush();
     }
 
-    private static DataSource createDatasource() {
+    private static HikariDataSource createDatasource() {
         HikariConfig config = new HikariConfig();
         config.setJdbcUrl(database.jdbcUrl());
         config.setUsername(database.username());
         config.setPassword(database.password());
+        // the plugin's own external pool sets this; exercise the same multi-row INSERT path here
+        config.addDataSourceProperty("reWriteBatchedInserts", "true");
         return new HikariDataSource(config);
     }
 
@@ -141,11 +147,25 @@ public class PGTimeseriesStorageTest {
     }
 
     private Sample sampleAt(Metric m, int plusSeconds, double value) {
+        return sampleAt(m, t0.plusSeconds(plusSeconds), value);
+    }
+
+    private static Sample sampleAt(Metric m, Instant time, double value) {
         return ImmutableSample.builder()
                 .metric(m)
-                .time(t0.plusSeconds(plusSeconds))
+                .time(time)
                 .value(value)
                 .build();
+    }
+
+    private static List<Sample> fetch(PGTimeseriesStorage s, Metric m, Instant start, Instant end, int stepSeconds) throws Exception {
+        return s.getTimeseries(ImmutableTimeSeriesFetchRequest.builder()
+                .metric(m)
+                .start(start)
+                .end(end)
+                .aggregation(Aggregation.NONE)
+                .step(Duration.ofSeconds(stepSeconds))
+                .build());
     }
 
     private void storeAndFlush(List<Sample> samples) throws Exception {
@@ -348,6 +368,68 @@ public class PGTimeseriesStorageTest {
                 .step(Duration.ofSeconds(1))
                 .build();
         assertEquals(42.0, realValues(storage.getTimeseries(request)).get(old), 0.0001);
+    }
+
+    @Test
+    public void fetchWindowIsExactAcrossTheRepeatedHourWhenDstEnds() throws Exception {
+        // On 2024-11-03 America/New_York goes from EDT to EST at 06:00Z, so 01:00 to 02:00 local happens twice.
+        // The fetch window used to be rendered as local time without an offset and read back in the session's
+        // zone; the two 01:30s were indistinguishable and a window from 05:00Z to 06:00Z collapsed to nothing.
+        final TimeZone original = TimeZone.getDefault();
+        TimeZone.setDefault(TimeZone.getTimeZone("America/New_York"));
+        HikariDataSource newYork = null;
+        PGTimeseriesStorage s = null;
+        try {
+            newYork = createDatasource(); // a fresh pool: every session it opens runs in the New York zone
+            s = new PGTimeseriesStorage(PGTimeseriesConfig.builder()
+                    .flushMaxSamples(1_000_000).flushMaxIntervalMs(3_600_000L).managePartitions(false).build(), newYork);
+            s.init();
+            Metric m = metric("gauge");
+            Instant firstOneThirty = Instant.parse("2024-11-03T05:30:00Z");  // 01:30 EDT
+            Instant secondOneThirty = Instant.parse("2024-11-03T06:30:00Z"); // 01:30 EST
+            s.store(asList(sampleAt(m, firstOneThirty, 1.0), sampleAt(m, secondOneThirty, 2.0)));
+            s.flush();
+
+            java.util.Map<Instant, Double> edt = realValues(fetch(s, m,
+                    Instant.parse("2024-11-03T05:00:00Z"), Instant.parse("2024-11-03T06:00:00Z"), 1800));
+            assertEquals(edt.toString(), 1, edt.size());
+            assertEquals(1.0, edt.get(firstOneThirty), 0.0001);
+
+            java.util.Map<Instant, Double> est = realValues(fetch(s, m,
+                    Instant.parse("2024-11-03T06:00:00Z"), Instant.parse("2024-11-03T07:00:00Z"), 1800));
+            assertEquals(est.toString(), 1, est.size());
+            assertEquals(2.0, est.get(secondOneThirty), 0.0001);
+        } finally {
+            TimeZone.setDefault(original);
+            if (s != null) {
+                s.destroy();
+            }
+            if (newYork != null) {
+                newYork.close();
+            }
+            PGTimeseriesDatabaseHelpers.configure(dataSource, config); // init() above re-pointed the shared helpers
+        }
+    }
+
+    @Test
+    public void aFullBufferRejectsTheBatchInsteadOfGrowingWithoutBound() throws Exception {
+        // No init(): no flush thread, so the buffer only drains when asked, which keeps the test deterministic.
+        PGTimeseriesStorage s = new PGTimeseriesStorage(PGTimeseriesConfig.builder()
+                .flushMaxSamples(1_000_000).flushMaxIntervalMs(3_600_000L).maxBufferedSamples(4).build(), dataSource);
+        Metric m = metric("gauge");
+        s.store(asList(sampleAt(m, 1, 1.0), sampleAt(m, 2, 2.0), sampleAt(m, 3, 3.0)));
+        try {
+            s.store(asList(sampleAt(m, 4, 4.0), sampleAt(m, 5, 5.0)));
+            throw new AssertionError("a batch that does not fit must be refused");
+        } catch (StorageException expected) {
+            assertTrue(expected.getMessage(), expected.getMessage().contains("buffer is full"));
+        }
+        assertEquals(2, s.getMetrics().meter("samplesRejected").getCount());
+        assertEquals(2, s.getMetrics().meter("samplesLost").getCount());
+        s.store(singletonList(sampleAt(m, 6, 6.0))); // one more still fits
+        s.flush();
+
+        assertEquals("the refused batch is gone, everything accepted is persisted", 4, countPersistedSamples(m.getKey()));
     }
 
     @Test
