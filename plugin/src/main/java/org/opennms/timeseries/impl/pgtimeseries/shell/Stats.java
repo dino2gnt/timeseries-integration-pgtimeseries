@@ -12,7 +12,7 @@ import org.opennms.timeseries.impl.pgtimeseries.PGTimeseriesStorage;
 import com.codahale.metrics.ConsoleReporter;
 
 
-@Command(scope = "opennms-pgtimeseries", name = "stats", description = "Display metrics from the pg_timeseries plugin.")
+@Command(scope = "opennms-pgtimeseries", name = "stats", description = "Display read, write, lost-sample and partition maintenance metrics from the pgtimeseries plugin.")
 @Service
 public class Stats implements Action {
 

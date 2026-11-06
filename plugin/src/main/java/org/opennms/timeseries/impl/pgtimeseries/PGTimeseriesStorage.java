@@ -6,6 +6,7 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collection;
@@ -41,9 +42,12 @@ import org.opennms.integration.api.v1.timeseries.immutables.ImmutableMetric;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableSample;
 import org.opennms.integration.api.v1.timeseries.immutables.ImmutableTag;
 import org.opennms.timeseries.impl.pgtimeseries.config.PGTimeseriesConfig;
+import org.opennms.timeseries.impl.pgtimeseries.partition.MaintenanceService;
+import org.opennms.timeseries.impl.pgtimeseries.partition.PartitionManager;
 import org.opennms.timeseries.impl.pgtimeseries.util.DBUtils;
 import org.opennms.timeseries.impl.pgtimeseries.util.PGTimeseriesDatabaseHelpers;
-import org.opennms.timeseries.impl.pgtimeseries.util.PGTimeseriesDatabaseInitializer;
+import org.opennms.timeseries.impl.pgtimeseries.util.SchemaManager;
+import org.opennms.timeseries.impl.pgtimeseries.util.TableNames;
 import org.slf4j.Logger;
 
 import com.codahale.metrics.jmx.JmxReporter;
@@ -59,6 +63,9 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
 
     private static final Logger RATE_LIMITED_LOGGER = log;
 
+    /** SQLSTATE check_violation; PostgreSQL raises it when no partition accepts a row's partition key. */
+    private static final String SQLSTATE_NO_PARTITION_FOR_ROW = "23514";
+
     private final DataSource dataSource;
     private final PGTimeseriesConfig config;
     public final Map<String, Integer> MetricCache = new HashMap<String, Integer>();
@@ -68,6 +75,9 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
     private final Queue<Sample> buffer = new ConcurrentLinkedQueue<>();
     private final AtomicInteger bufferedCount = new AtomicInteger(0);
     private volatile ScheduledExecutorService flushExecutor;
+
+    // Partition maintenance (create ahead, retention, compression) on its own thread; null when disabled.
+    private volatile MaintenanceService maintenance;
 
     private final MetricRegistry metrics = new MetricRegistry();
     private final Meter samplesWritten = metrics.meter("samplesWritten");
@@ -194,8 +204,42 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
         flushPending();
     }
 
-    /** Persists one batch of samples within a single transaction. */
+    /**
+     * Persists one batch of samples within a single transaction. If the database reports that no partition
+     * accepts a sample's timestamp (which can only happen when the default partition is missing), the partitions
+     * for the lead window are created (bounded wait, on the maintenance thread) and the batch retried once. A
+     * full maintenance pass is deliberately not run here: it could hold up every flush and every reader.
+     */
     private void writeSamples(final List<Sample> samples) throws StorageException {
+        try {
+            writeSamplesOnce(samples);
+            return;
+        } catch (SQLException e) {
+            final MaintenanceService ms = this.maintenance;
+            if (SQLSTATE_NO_PARTITION_FOR_ROW.equals(e.getSQLState()) && ms != null) {
+                RATE_LIMITED_LOGGER.warn("Flush failed because no partition accepts a sample's timestamp (is the "
+                        + "default partition missing? run opennms-pgtimeseries:install); creating partitions for "
+                        + "the lead window and retrying once.", e);
+                try {
+                    ms.ensurePartitionsNow(30);
+                    writeSamplesOnce(samples);
+                    return;
+                } catch (SQLException | RuntimeException retry) {
+                    throw lost(samples, retry);
+                }
+            }
+            throw lost(samples, e);
+        }
+    }
+
+    private StorageException lost(final List<Sample> samples, final Throwable cause) {
+        RATE_LIMITED_LOGGER.error("An error occurred while inserting samples. {} samples may be lost.", samples.size(), cause);
+        samplesLost.mark(samples.size());
+        return new StorageException(cause);
+    }
+
+    /** One attempt at persisting a batch in a single transaction; rolls back and rethrows on any SQL failure. */
+    private void writeSamplesOnce(final List<Sample> samples) throws SQLException {
         final String sampleSql = "INSERT INTO pgtimeseries_time_series(time, keyid, value) values (?, ?, ?)";
         // DO UPDATE (rather than DO NOTHING) guarantees the row is RETURNED even on a concurrent-insert conflict,
         // avoiding a null keyid. This branch only runs on a metric-cache miss (~once per metric per process).
@@ -203,8 +247,9 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                 + "ON CONFLICT (key) DO UPDATE SET key = EXCLUDED.key RETURNING keyid";
 
         final DBUtils db = new DBUtils(this.getClass());
+        // Metric ids cached during this attempt; evicted on rollback since their rows are rolled back too.
+        final List<String> cachedThisAttempt = new ArrayList<>();
         Connection connection = null;
-        int written = 0;
         try {
             connection = openConnection();
             db.watch(connection);
@@ -216,6 +261,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             db.watch(sps);
 
             int pending = 0;
+            int written = 0;
             for (final Sample sample : samples) {
                 final String key = sample.getMetric().getKey();
                 Integer keyid = MetricCache.get(key);
@@ -230,6 +276,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                         continue;
                     }
                     MetricCache.put(key, keyid);
+                    cachedThisAttempt.add(key);
                     cacheSize.mark();
                 }
                 sps.setTimestamp(1, new Timestamp(sample.getTime().toEpochMilli()));
@@ -252,9 +299,9 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                 log.debug("Flushed {} samples to the database", written);
             }
         } catch (SQLException e) {
-            RATE_LIMITED_LOGGER.error("An error occurred while inserting samples. {} samples may be lost.",
-                    samples.size() - written, e);
-            samplesLost.mark(samples.size() - written);
+            for (final String key : cachedThisAttempt) {
+                MetricCache.remove(key);
+            }
             if (connection != null) {
                 try {
                     connection.rollback();
@@ -262,7 +309,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
                     log.warn("Rollback failed after a failed flush.", re);
                 }
             }
-            throw new StorageException(e);
+            throw e;
         } finally {
             db.cleanUp();
         }
@@ -674,8 +721,7 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
 
     public void init() throws StorageException {
         try {
-            new PGTimeseriesDatabaseInitializer(this.dataSource, this.config)
-                    .initializeIfNeeded();
+            new SchemaManager(this.dataSource, this.config).initializeIfNeeded();
         } catch (final SQLException e) {
             throw new StorageException(e);
         }
@@ -689,6 +735,18 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
         // fixed delay (not fixed rate) so a slow flush can't cause flushes to pile up
         ex.scheduleWithFixedDelay(this::flushQuietly, interval, interval, TimeUnit.MILLISECONDS);
         this.flushExecutor = ex;
+
+        if (config.getManagePartitions()) {
+            final PartitionManager pm = new PartitionManager(PGTimeseriesDatabaseHelpers::getWhichDataSourceConnection,
+                    TableNames.PGTIMESERIES_TIME_SERIES, TableNames.PGTIMESERIES_CONFIG, config.getbackfillStart(),
+                    Clock.systemUTC());
+            final MaintenanceService ms = new MaintenanceService(pm, config.getMaintenanceIntervalMinutes(), metrics,
+                    SchemaManager::isLegacyPartmanManagedQuietly);
+            ms.start();
+            this.maintenance = ms;
+        } else {
+            log.info("managePartitions is false; the plugin will not create, drop or compress partitions.");
+        }
 
         reporter.start();
     }
@@ -710,11 +768,21 @@ public class PGTimeseriesStorage implements TimeSeriesStorage {
             }
             ex.shutdownNow();
         }
+        final MaintenanceService ms = this.maintenance;
+        if (ms != null) {
+            ms.stop();
+            this.maintenance = null;
+        }
         reporter.stop();
         PGTimeseriesDatabaseHelpers.ExtReporter.stop(); // janky
     }
 
     public MetricRegistry getMetrics() {
         return metrics;
+    }
+
+    /** The partition maintenance service, or null when {@code managePartitions} is false or before init(). */
+    public MaintenanceService getMaintenanceService() {
+        return maintenance;
     }
 }
