@@ -37,11 +37,12 @@ public final class ContainerizedDatabase implements AutoCloseable {
     private static final String[] CANDIDATES = {"docker", "nerdctl", "podman", "ctr"};
 
     /**
-     * Single source of truth for the pg_timeseries test image. Override per-run with
-     * {@code -Dpgtimeseries.test.image=...}. Both integration tests use this so the tag is bumped in one place.
+     * Single source of truth for the PostgreSQL test image. The plugin needs no extension, so a stock image is
+     * used; override per-run with {@code -Dpgtimeseries.test.image=...}. All integration tests use this so the
+     * tag is bumped in one place.
      */
     public static final String DEFAULT_IMAGE =
-            System.getProperty("pgtimeseries.test.image", "ghcr.io/chuckhend/pg18-timeseries:latest");
+            System.getProperty("pgtimeseries.test.image", "postgres:16-alpine");
 
     private final String cli;
     private final String containerRef; // container id (docker-like) or name (ctr)

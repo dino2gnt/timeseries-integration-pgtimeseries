@@ -24,6 +24,9 @@
             <cm:property name="connectionPoolSize" value = "10" />
             <cm:property name="flushMaxSamples" value = "1000" />
             <cm:property name="flushMaxIntervalMs" value = "5000" />
+            <cm:property name="partitionLeadTime" value = "1 month" />
+            <cm:property name="maintenanceIntervalMinutes" value = "60" />
+            <cm:property name="managePartitions" value = "true" />
         </cm:default-properties>
     </cm:property-placeholder>
 
@@ -39,12 +42,16 @@
         <argument value="${connectionPoolSize}" />
         <argument value="${flushMaxSamples}" />
         <argument value="${flushMaxIntervalMs}" />
+        <argument value="${partitionLeadTime}" />
+        <argument value="${maintenanceIntervalMinutes}" />
+        <argument value="${managePartitions}" />
     </bean>
 
     <reference id="dataSource" interface="javax.sql.DataSource" availability="mandatory" />
     <bean id="timeSeriesStorage"
           class="org.opennms.timeseries.impl.pgtimeseries.PGTimeseriesStorage"
-          init-method="init">
+          init-method="init"
+          destroy-method="destroy">
         <argument ref="dataSource" />
         <argument ref="PGTimeseriesConfig" />
     </bean>

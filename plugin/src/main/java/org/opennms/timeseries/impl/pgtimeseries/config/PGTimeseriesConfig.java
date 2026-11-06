@@ -15,6 +15,9 @@ public class PGTimeseriesConfig {
     private final int connectionPoolSize;
     private final int flushMaxSamples;
     private final long flushMaxIntervalMs;
+    private final String partitionLeadTime;
+    private final long maintenanceIntervalMinutes;
+    private final boolean managePartitions;
 
     public PGTimeseriesConfig() {
         this(builder());
@@ -32,6 +35,9 @@ public class PGTimeseriesConfig {
         this.connectionPoolSize = builder.connectionPoolSize;
         this.flushMaxSamples = builder.flushMaxSamples;
         this.flushMaxIntervalMs = builder.flushMaxIntervalMs;
+        this.partitionLeadTime = builder.partitionLeadTime;
+        this.maintenanceIntervalMinutes = builder.maintenanceIntervalMinutes;
+        this.managePartitions = builder.managePartitions;
     }
 
     /** Will be called via blueprint. The builder can be called when not running as Osgi plugin. */
@@ -46,7 +52,10 @@ public class PGTimeseriesConfig {
             final int maxBatchSize,
             final int connectionPoolSize,
             final int flushMaxSamples,
-            final long flushMaxIntervalMs) {
+            final long flushMaxIntervalMs,
+            final String partitionLeadTime,
+            final long maintenanceIntervalMinutes,
+            final boolean managePartitions) {
         this(builder()
                 .externalDatasourceURL(externalDatasourceURL)
                 .adminDatasourceURL(adminDatasourceURL)
@@ -58,7 +67,10 @@ public class PGTimeseriesConfig {
                 .maxBatchSize(maxBatchSize)
                 .connectionPoolSize(connectionPoolSize)
                 .flushMaxSamples(flushMaxSamples)
-                .flushMaxIntervalMs(flushMaxIntervalMs));
+                .flushMaxIntervalMs(flushMaxIntervalMs)
+                .partitionLeadTime(partitionLeadTime)
+                .maintenanceIntervalMinutes(maintenanceIntervalMinutes)
+                .managePartitions(managePartitions));
     }
 
     public String getExternalDatasourceURL() {
@@ -107,6 +119,27 @@ public class PGTimeseriesConfig {
         return flushMaxIntervalMs;
     }
 
+    /**
+     * How far ahead of "now" partitions are kept pre-created, as a PostgreSQL interval. Mirrors the
+     * {@code partition_lead_time} that pg_timeseries used to apply (default {@code 1 month}).
+     */
+    public String getPartitionLeadTime() {
+        return partitionLeadTime;
+    }
+
+    /** Minutes between partition maintenance runs (create future partitions, apply retention and compression). */
+    public long getMaintenanceIntervalMinutes() {
+        return maintenanceIntervalMinutes;
+    }
+
+    /**
+     * When false the plugin never creates, drops or compresses partitions; something else (a DBA, pg_partman)
+     * is expected to manage them. The plugin still writes and reads as usual.
+     */
+    public boolean getManagePartitions() {
+        return managePartitions;
+    }
+
     public static Builder builder() {
         return new Builder();
     }
@@ -123,6 +156,9 @@ public class PGTimeseriesConfig {
         private int connectionPoolSize = 100;
         private int flushMaxSamples = 1000;
         private long flushMaxIntervalMs = 5000;
+        private String partitionLeadTime = "1 month";
+        private long maintenanceIntervalMinutes = 60;
+        private boolean managePartitions = true;
 
         public Builder externalDatasourceURL(final String externalDatasourceURL) {
             this.externalDatasourceURL = externalDatasourceURL;
@@ -179,6 +215,21 @@ public class PGTimeseriesConfig {
             return this;
         }
 
+        public Builder partitionLeadTime(final String partitionLeadTime) {
+            this.partitionLeadTime = partitionLeadTime;
+            return this;
+        }
+
+        public Builder maintenanceIntervalMinutes(final long maintenanceIntervalMinutes) {
+            this.maintenanceIntervalMinutes = maintenanceIntervalMinutes;
+            return this;
+        }
+
+        public Builder managePartitions(final boolean managePartitions) {
+            this.managePartitions = managePartitions;
+            return this;
+        }
+
         public PGTimeseriesConfig build() {
             return new PGTimeseriesConfig(this);
         }
@@ -198,6 +249,9 @@ public class PGTimeseriesConfig {
                 .add("connectionPoolSize='" + connectionPoolSize + "'" )
                 .add("flushMaxSamples='" + flushMaxSamples + "'")
                 .add("flushMaxIntervalMs='" + flushMaxIntervalMs + "'")
+                .add("partitionLeadTime='" + partitionLeadTime + "'")
+                .add("maintenanceIntervalMinutes='" + maintenanceIntervalMinutes + "'")
+                .add("managePartitions=" + managePartitions)
                 .toString();
     }
 }

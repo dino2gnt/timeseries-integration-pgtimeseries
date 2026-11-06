@@ -26,6 +26,10 @@ public class PGTimeseriesConfigTest {
         // new write-behind buffer settings
         assertEquals(1000, config.getFlushMaxSamples());
         assertEquals(5000L, config.getFlushMaxIntervalMs());
+        // partition management settings
+        assertEquals("1 month", config.getPartitionLeadTime());
+        assertEquals(60L, config.getMaintenanceIntervalMinutes());
+        assertTrue(config.getManagePartitions());
     }
 
     @Test
@@ -42,6 +46,9 @@ public class PGTimeseriesConfigTest {
                 .connectionPoolSize(20)
                 .flushMaxSamples(5000)
                 .flushMaxIntervalMs(2500L)
+                .partitionLeadTime("2 weeks")
+                .maintenanceIntervalMinutes(15)
+                .managePartitions(false)
                 .build();
 
         assertEquals("jdbc:postgresql://ext/db", config.getExternalDatasourceURL());
@@ -55,6 +62,9 @@ public class PGTimeseriesConfigTest {
         assertEquals(20, config.getConnectionPoolSize());
         assertEquals(5000, config.getFlushMaxSamples());
         assertEquals(2500L, config.getFlushMaxIntervalMs());
+        assertEquals("2 weeks", config.getPartitionLeadTime());
+        assertEquals(15L, config.getMaintenanceIntervalMinutes());
+        assertEquals(false, config.getManagePartitions());
     }
 
     @Test
@@ -63,7 +73,7 @@ public class PGTimeseriesConfigTest {
         // assigns values to the wrong fields.
         PGTimeseriesConfig config = new PGTimeseriesConfig(
                 "jdbc:ext", "jdbc:admin", "2 weeks", "2 years", "4 months",
-                "2021-06-01", true, 300, 30, 7000, 9000L);
+                "2021-06-01", true, 300, 30, 7000, 9000L, "3 weeks", 30L, false);
 
         assertEquals("jdbc:ext", config.getExternalDatasourceURL());
         assertEquals("jdbc:admin", config.getAdminDatasourceURL());
@@ -76,6 +86,9 @@ public class PGTimeseriesConfigTest {
         assertEquals(30, config.getConnectionPoolSize());
         assertEquals(7000, config.getFlushMaxSamples());
         assertEquals(9000L, config.getFlushMaxIntervalMs());
+        assertEquals("3 weeks", config.getPartitionLeadTime());
+        assertEquals(30L, config.getMaintenanceIntervalMinutes());
+        assertEquals(false, config.getManagePartitions());
     }
 
     @Test

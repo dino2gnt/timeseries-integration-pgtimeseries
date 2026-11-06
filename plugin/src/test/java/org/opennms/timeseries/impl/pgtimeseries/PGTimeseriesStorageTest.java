@@ -46,7 +46,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * Integration test for {@link PGTimeseriesStorage} against a real PostgreSQL + pg_timeseries database.
+ * Integration test for {@link PGTimeseriesStorage} against a stock PostgreSQL database (no extensions).
  *
  * <p>Unlike the generic {@code AbstractStorageIntegrationTest}, this test is written against this plugin's
  * actual read semantics: counters are returned as a rate, gauges as raw/aggregated values, and every bucket
@@ -68,7 +68,7 @@ public class PGTimeseriesStorageTest {
 
     @BeforeClass
     public static void setUpContainer() throws Exception {
-        Assume.assumeTrue("No container runtime is available; skipping pg_timeseries integration test.",
+        Assume.assumeTrue("No container runtime is available; skipping pgtimeseries integration test.",
                 ContainerizedDatabase.isRuntimeAvailable());
 
         try {
@@ -79,13 +79,6 @@ public class PGTimeseriesStorageTest {
             Assume.assumeNoException("Container runtime present but could not start a database; skipping.", e);
         }
         dataSource = createDatasource();
-
-        // The extension installer reassigns ownership of the pg_timeseries config tables to the "opennms" role,
-        // which exists in a real OpenNMS database but not in a bare container; create it so install succeeds.
-        try (Connection c = dataSource.getConnection(); Statement st = c.createStatement()) {
-            st.execute("DO $$ BEGIN IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'opennms') "
-                    + "THEN CREATE ROLE opennms; END IF; END $$;");
-        }
 
         // High flush thresholds so buffering is deterministic: nothing auto-flushes during the test, leaving
         // flushes under the control of flush()/read-triggered flushPending().
@@ -335,6 +328,26 @@ public class PGTimeseriesStorageTest {
         storage.flush();
 
         assertEquals(3, countPersistedSamples(m.getKey()));
+    }
+
+    @Test
+    public void samplesOutsideTheManagedPartitionRangeAreStillStored() throws Exception {
+        // Far older than any pre-created partition: PostgreSQL routes the row to the default partition instead of
+        // rejecting the whole flush batch, and the parent table still returns it.
+        Metric m = metric("gauge");
+        Instant old = Instant.parse("2001-01-01T00:00:00Z");
+        storage.store(singletonList(ImmutableSample.builder().metric(m).time(old).value(42.0).build()));
+        storage.flush();
+
+        assertEquals(1, countPersistedSamples(m.getKey()));
+        TimeSeriesFetchRequest request = ImmutableTimeSeriesFetchRequest.builder()
+                .metric(m)
+                .start(old.minusSeconds(1))
+                .end(old.plusSeconds(1))
+                .aggregation(Aggregation.NONE)
+                .step(Duration.ofSeconds(1))
+                .build();
+        assertEquals(42.0, realValues(storage.getTimeseries(request)).get(old), 0.0001);
     }
 
     @Test
